@@ -1,0 +1,56 @@
+{
+  "name": "SmartOMR Pro VN — Chấm Thi Trắc Nghiệm Di Động",
+  "short_name": "SmartOMR Pro",
+  "description": "Ứng dụng chấm trắc nghiệm bằng Camera điện thoại chuẩn Bộ GD&ĐT (Mẫu THPT 2025 & Mẫu 40/50/120 câu), tích hợp Gemini AI và OpenCV.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#1e3a8a",
+  "lang": "vi",
+  "categories": ["education", "productivity", "utilities"],
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Quét Phiếu Camera",
+      "url": "./#tab-camera",
+      "description": "Mở camera chấm bài tức thì"
+    },
+    {
+      "name": "Chấm Lô Thư Viện",
+      "url": "./#tab-batch",
+      "description": "Chấm nhiều ảnh phiếu từ thư viện"
+    },
+    {
+      "name": "Bảng Điểm Excel",
+      "url": "./#tab-gradebook",
+      "description": "Xem điểm và xuất file Excel"
+    }
+  ]
+}
