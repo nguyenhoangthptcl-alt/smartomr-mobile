@@ -1,4 +1,4 @@
-const CACHE_NAME = "smartomr-pro-v2.7.0";
+const CACHE_NAME = "smartomr-pro-v2.8.0";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
@@ -16,68 +16,46 @@ const STATIC_ASSETS = [
   "./manifest.webmanifest"
 ];
 
-// Install: Cache offline assets
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(STATIC_ASSETS).catch((err) => {
-        console.warn("[SW] Cache preload warning:", err);
-      });
-    })
+    caches.open(CACHE_NAME).then((cache) =>
+      cache.addAll(STATIC_ASSETS).catch((err) => console.warn("[SW] Cache preload warning:", err))
+    )
   );
   self.skipWaiting();
 });
 
-// Activate: Cleanup old caches
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.map((key) => {
-          if (key !== CACHE_NAME) {
-            return caches.delete(key);
-          }
-        })
-      );
-    })
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
   );
   self.clients.claim();
 });
 
-// Fetch: Network first for API, cache first for static assets
+// Chỉ xử lý file CÙNG TÊN MIỀN (không đụng tới Firebase/Firestore/Gemini).
+// Ưu tiên mạng để luôn nhận bản mới sau khi deploy; mất mạng thì dùng bản đã lưu.
 self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-
-  // Bỏ qua các yêu cầu API hoặc không phải GET để chạy qua mạng
-  if (event.request.method !== "GET" || url.pathname.includes("/api/")) {
-    return;
-  }
+  const req = event.request;
+  const url = new URL(req.url);
+  if (req.method !== "GET" || url.origin !== self.location.origin) return;
 
   event.respondWith(
-    caches.match(event.request).then((cachedResponse) => {
-      if (cachedResponse) {
-        fetch(event.request).then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, networkResponse));
-          }
-        }).catch(() => {});
-        return cachedResponse;
-      }
-
-      return fetch(event.request).then((response) => {
-        if (!response || response.status !== 200 || response.type !== "basic") {
-          return response;
+    fetch(req)
+      .then((res) => {
+        if (res && res.status === 200 && res.type === "basic") {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then((c) => c.put(req, copy));
         }
-        const responseToCache = response.clone();
-        caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseToCache);
-        });
-        return response;
-      }).catch(() => {
-        if (event.request.mode === "navigate") {
-          return caches.match("./") || caches.match("./index.html");
-        }
-      });
-    })
+        return res;
+      })
+      .catch(() =>
+        caches.match(req).then((hit) => {
+          if (hit) return hit;
+          if (req.mode === "navigate") return caches.match("./index.html");
+          return Response.error();
+        })
+      )
   );
 });

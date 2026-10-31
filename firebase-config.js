@@ -1,11 +1,11 @@
 /**
- * SmartOMR Pro Mobile — Cấu Hình & Module Quản Lý Xác Thực Firebase
- * - Đăng ký / Đăng nhập tài khoản giáo viên
- * - Quản trị duyệt tài khoản bởi Admin (Thầy Nguyễn Văn Hoàng)
- * - Quản lý Gemini API Key riêng biệt cho từng tài khoản
- * - Hỗ trợ cả Firebase thật và Chế độ Mô phỏng (Mock Mode) khi chưa cấu hình Firebase
+ * SmartOMR Pro Mobile — Cấu hình & Module Xác thực Firebase (bản đã sửa)
+ * - Đăng ký / Đăng nhập giáo viên bằng Firebase Authentication
+ * - Hồ sơ người dùng lưu ở Firestore: users/{uid}
+ * - Gemini API Key lưu RIÊNG ở users/{uid}/private/gemini (chỉ chủ tài khoản đọc được)
+ * - Quyền Admin do Firestore Rules quyết định; KHÔNG còn "mã kích hoạt Admin" nằm trong code
+ * - Chế độ Demo (Mock) chỉ chạy khi chưa dán cấu hình Firebase
  */
-
 (function (window) {
   "use strict";
 
@@ -13,385 +13,357 @@
   const STORAGE_KEY_SESSION = "smartomr_auth_session";
   const STORAGE_KEY_MOCK_USERS = "smartomr_mock_users";
 
-  // Cấu hình mẫu mặc định (Thầy Hoàng có thể thay thế bằng config từ Firebase Console)
-  const DEFAULT_FIREBASE_CONFIG = {
-    apiKey: "",
-    authDomain: "",
-    projectId: "",
-    storageBucket: "",
-    messagingSenderId: "",
-    appId: ""
+  // ======================================================================
+  // >>> THẦY DÁN CẤU HÌNH FIREBASE CỦA THẦY VÀO ĐÂY (lấy ở Firebase Console
+  // >>> → Project settings → Your apps → Web app → firebaseConfig).
+  // >>> Đây là thông tin CÔNG KHAI, không phải mật khẩu; bảo mật nằm ở Rules.
+  // >>> Dán vào đây thì MỌI thiết bị của giáo viên đều tự kết nối, không phải
+  // >>> nhập tay trên từng điện thoại.
+  // ======================================================================
+  const EMBEDDED_FIREBASE_CONFIG = {
+    apiKey: "AIzaSyDKzEVoKpRmhQVbsK2gOIRFxU8zzGGRJYs",
+    authDomain: "chamthi-a06f1.firebaseapp.com",
+    projectId: "chamthi-a06f1",
+    storageBucket: "chamthi-a06f1.firebasestorage.app",
+    messagingSenderId: "616917466536",
+    appId: "1:616917466536:web:874ed855565e714df0319dhttps://nguyenhoangthptcl-alt.github.io/smartomr-mobile/"
   };
 
-  // Mật khẩu bí mật Admin dùng khi tạo tài khoản Admin đầu tiên (nếu cần kích hoạt ngay)
-  const ADMIN_SECRET_CODE = "CHILANG2025";
-  const DEFAULT_ADMIN_EMAIL = "hoang.thptchilang@gmail.com";
+  const DEFAULT_ADMIN_EMAIL = "hoang.thptchilang@gmail.com"; // chỉ dùng cho chế độ Demo
 
-  let firebaseApp = null;
   let firebaseAuth = null;
   let firestoreDb = null;
   let currentUserProfile = null;
+  let registering = false;
+  let profileListeners = [];
 
-  // Lấy cấu hình đã lưu
+  // ---------------- Cấu hình ----------------
   function getFirebaseConfig() {
+    if (EMBEDDED_FIREBASE_CONFIG.apiKey && EMBEDDED_FIREBASE_CONFIG.projectId) {
+      return EMBEDDED_FIREBASE_CONFIG;
+    }
     try {
       const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
-      return saved ? JSON.parse(saved) : DEFAULT_FIREBASE_CONFIG;
+      return saved ? JSON.parse(saved) : EMBEDDED_FIREBASE_CONFIG;
     } catch (e) {
-      return DEFAULT_FIREBASE_CONFIG;
+      return EMBEDDED_FIREBASE_CONFIG;
     }
   }
-
   function saveFirebaseConfig(cfg) {
     localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(cfg));
   }
-
   function isFirebaseConfigured() {
     const cfg = getFirebaseConfig();
     return Boolean(cfg && cfg.apiKey && cfg.projectId);
   }
+  function isCloudReady() {
+    return Boolean(isFirebaseConfigured() && firebaseAuth && firestoreDb);
+  }
 
-  // Khởi tạo Firebase SDK
+  function onProfileChange(cb) { profileListeners.push(cb); }
+  function emitProfileChange() {
+    profileListeners.forEach((cb) => { try { cb(currentUserProfile); } catch (e) { console.error(e); } });
+  }
+  function cacheSession(profile) {
+    currentUserProfile = profile;
+    if (profile) localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(profile));
+    else localStorage.removeItem(STORAGE_KEY_SESSION);
+  }
+
+  // Dịch lỗi Firebase sang tiếng Việt
+  function friendlyError(err) {
+    const code = (err && err.code) || "";
+    const map = {
+      "auth/email-already-in-use": "Email này đã được đăng ký.",
+      "auth/invalid-email": "Email không hợp lệ.",
+      "auth/weak-password": "Mật khẩu quá yếu (tối thiểu 6 ký tự).",
+      "auth/user-not-found": "Email hoặc mật khẩu không chính xác.",
+      "auth/wrong-password": "Email hoặc mật khẩu không chính xác.",
+      "auth/invalid-credential": "Email hoặc mật khẩu không chính xác.",
+      "auth/invalid-login-credentials": "Email hoặc mật khẩu không chính xác.",
+      "auth/too-many-requests": "Thử sai quá nhiều lần, vui lòng đợi vài phút rồi thử lại.",
+      "auth/network-request-failed": "Không có kết nối mạng. Hãy kiểm tra Wi-Fi/4G.",
+      "auth/operation-not-allowed": "Chưa bật đăng nhập Email/Password trong Firebase Authentication.",
+      "auth/unauthorized-domain": "Tên miền web chưa được thêm vào Authorized domains của Firebase.",
+      "auth/api-key-not-valid": "API Key Firebase không hợp lệ, hãy kiểm tra lại cấu hình.",
+      "permission-denied": "Firestore từ chối quyền truy cập. Hãy kiểm tra Rules và trạng thái tài khoản."
+    };
+    if (map[code]) return new Error(map[code]);
+    if (code === "unavailable") return new Error("Không kết nối được máy chủ Firebase.");
+    return err instanceof Error ? err : new Error(String(err));
+  }
+
+  // ---------------- Khởi tạo ----------------
   function initFirebase() {
     const cfg = getFirebaseConfig();
     if (isFirebaseConfigured() && window.firebase) {
       try {
-        if (!firebase.apps.length) {
-          firebaseApp = firebase.initializeApp(cfg);
-        } else {
-          firebaseApp = firebase.app();
-        }
+        if (!firebase.apps.length) firebase.initializeApp(cfg);
         firebaseAuth = firebase.auth();
         firestoreDb = firebase.firestore();
-        console.log("[Firebase] Đã kết nối Firebase Cloud thành công!");
+        console.log("[Firebase] Đã kết nối Firebase Cloud.");
+        firebaseAuth.onAuthStateChanged(handleAuthStateChanged);
         return true;
       } catch (err) {
-        console.warn("[Firebase] Khởi tạo Firebase lỗi, dùng chế độ Local Mock:", err);
+        console.warn("[Firebase] Khởi tạo lỗi, dùng chế độ Demo:", err);
+        firebaseAuth = null; firestoreDb = null;
       }
     } else {
-      console.log("[Firebase] Chưa cấu hình Project ID, chạy ở chế độ Local Mock.");
+      console.log("[Firebase] Chưa có cấu hình → chạy chế độ Demo (Local).");
     }
     initMockUsersIfEmpty();
     return false;
   }
 
-  // =========================================================================
-  // MOCK STORAGE: Dành cho chạy thử khi thầy chưa cấu hình Firebase
-  // =========================================================================
-  function initMockUsersIfEmpty() {
-    let users = getMockUsers();
-    if (!users || users.length === 0) {
-      users = [
-        {
-          uid: "admin_hoang_01",
-          email: DEFAULT_ADMIN_EMAIL,
-          password: "password123",
-          displayName: "Thầy Nguyễn Văn Hoàng",
-          school: "THPT Chi Lăng, Lạng Sơn",
-          phone: "0988888888",
-          role: "admin",
-          status: "approved",
-          geminiApiKey: localStorage.getItem("smartomr_gemini_key") || "",
-          geminiModel: "gemini-flash-latest",
-          createdAt: new Date().toISOString(),
-          approvedAt: new Date().toISOString()
-        },
-        {
-          uid: "teacher_demo_02",
-          email: "giaovien.toan@gmail.com",
-          password: "password123",
-          displayName: "Cô Trần Thị Mai",
-          school: "THPT Chi Lăng, Lạng Sơn",
-          phone: "0912345678",
-          role: "teacher",
-          status: "pending",
-          geminiApiKey: "",
-          geminiModel: "gemini-flash-latest",
-          createdAt: new Date().toISOString(),
-          approvedAt: null
-        }
-      ];
-      saveMockUsers(users);
-    }
-  }
-
-  function getMockUsers() {
+  async function loadProfileFromCloud(uid) {
+    const snap = await firestoreDb.collection("users").doc(uid).get();
+    if (!snap.exists) return null;
+    const profile = snap.data();
+    profile.uid = uid;
     try {
-      return JSON.parse(localStorage.getItem(STORAGE_KEY_MOCK_USERS) || "[]");
+      const priv = await firestoreDb.collection("users").doc(uid).collection("private").doc("gemini").get();
+      profile.geminiApiKey = priv.exists ? (priv.data().apiKey || "") : "";
     } catch (e) {
-      return [];
+      profile.geminiApiKey = "";
     }
+    return profile;
   }
 
-  function saveMockUsers(users) {
-    localStorage.setItem(STORAGE_KEY_MOCK_USERS, JSON.stringify(users));
+  async function handleAuthStateChanged(user) {
+    if (registering) return;
+    if (!user) {
+      if (currentUserProfile) { cacheSession(null); emitProfileChange(); }
+      return;
+    }
+    try {
+      const profile = await loadProfileFromCloud(user.uid);
+      if (!profile) {
+        await firebaseAuth.signOut();
+        cacheSession(null);
+      } else {
+        cacheSession(profile);
+      }
+    } catch (e) {
+      console.warn("[Firebase] Không tải được hồ sơ (có thể đang offline), dùng bản lưu cục bộ.", e);
+    }
+    emitProfileChange();
   }
 
-  // =========================================================================
-  // AUTH API: ĐĂNG KÝ, ĐĂNG NHẬP, DUYỆT TÀI KHOẢN
-  // =========================================================================
+  // ---------------- Chế độ Demo (Mock) ----------------
+  function getMockUsers() {
+    try { return JSON.parse(localStorage.getItem(STORAGE_KEY_MOCK_USERS) || "[]"); } catch (e) { return []; }
+  }
+  function saveMockUsers(users) { localStorage.setItem(STORAGE_KEY_MOCK_USERS, JSON.stringify(users)); }
+  function initMockUsersIfEmpty() {
+    if (getMockUsers().length > 0) return;
+    const now = new Date().toISOString();
+    saveMockUsers([
+      { uid: "admin_demo", email: DEFAULT_ADMIN_EMAIL, password: "password123", displayName: "Admin Demo",
+        school: "THPT Chi Lăng, Lạng Sơn", phone: "", role: "admin", status: "approved",
+        geminiApiKey: "", geminiModel: "gemini-flash-latest", createdAt: now, approvedAt: now },
+      { uid: "teacher_demo", email: "giaovien.demo@example.com", password: "password123", displayName: "Giáo viên Demo",
+        school: "THPT Chi Lăng, Lạng Sơn", phone: "", role: "teacher", status: "pending",
+        geminiApiKey: "", geminiModel: "gemini-flash-latest", createdAt: now, approvedAt: null }
+    ]);
+  }
 
-  /**
-   * Đăng ký tài khoản giáo viên mới
-   */
-  async function registerUser({ email, password, displayName, school, phone, adminSecret }) {
-    const cleanEmail = email.trim().toLowerCase();
-    const isSpecialAdmin = (adminSecret && adminSecret.trim() === ADMIN_SECRET_CODE) || cleanEmail === DEFAULT_ADMIN_EMAIL;
-    const role = isSpecialAdmin ? "admin" : "teacher";
-    const status = isSpecialAdmin ? "approved" : "pending";
-
-    // 1. Nếu có Firebase Cloud
-    if (isFirebaseConfigured() && firebaseAuth && firestoreDb) {
-      const userCred = await firebaseAuth.createUserWithEmailAndPassword(cleanEmail, password);
-      const user = userCred.user;
-      await user.updateProfile({ displayName: displayName });
-
-      const profile = {
-        uid: user.uid,
-        email: cleanEmail,
-        displayName: displayName,
-        school: school || "THPT Chi Lăng",
-        phone: phone || "",
-        role: role,
-        status: status,
-        geminiApiKey: "",
-        geminiModel: "gemini-flash-latest",
-        createdAt: new Date().toISOString(),
-        approvedAt: isSpecialAdmin ? new Date().toISOString() : null
-      };
-
-      await firestoreDb.collection("users").doc(user.uid).set(profile);
-      return profile;
-    }
-
-    // 2. Chế độ Mock Storage
-    const users = getMockUsers();
-    if (users.some((u) => u.email === cleanEmail)) {
-      throw new Error("Email này đã được đăng ký trong hệ thống!");
-    }
-
-    const newProfile = {
-      uid: "usr_" + Math.random().toString(36).substring(2, 9),
-      email: cleanEmail,
-      password: password,
-      displayName: displayName,
+  // ---------------- Đăng ký / Đăng nhập ----------------
+  function buildNewProfile(uid, email, displayName, school, phone) {
+    return {
+      uid, email, displayName,
       school: school || "THPT Chi Lăng",
       phone: phone || "",
-      role: role,
-      status: status,
-      geminiApiKey: "",
+      role: "teacher",          // luôn là teacher; Admin chỉ được đặt thủ công trong Firebase Console
+      status: "pending",        // luôn chờ duyệt
+      hasGeminiKey: false,
       geminiModel: "gemini-flash-latest",
       createdAt: new Date().toISOString(),
-      approvedAt: isSpecialAdmin ? new Date().toISOString() : null
+      approvedAt: null
     };
-
-    users.push(newProfile);
-    saveMockUsers(users);
-    return newProfile;
   }
 
-  /**
-   * Đăng nhập tài khoản
-   */
+  async function registerUser({ email, password, displayName, school, phone }) {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!displayName || !displayName.trim()) throw new Error("Vui lòng nhập họ và tên.");
+
+    if (isCloudReady()) {
+      registering = true;
+      try {
+        let user;
+        try {
+          const cred = await firebaseAuth.createUserWithEmailAndPassword(cleanEmail, password);
+          user = cred.user;
+        } catch (err) {
+          // Tài khoản Auth đã có nhưng hồ sơ bị Admin xoá trước đó → cho phép tạo lại hồ sơ chờ duyệt
+          if (err.code === "auth/email-already-in-use") {
+            let cred;
+            try { cred = await firebaseAuth.signInWithEmailAndPassword(cleanEmail, password); }
+            catch (e2) { throw new Error("Email này đã được đăng ký. Hãy chuyển sang tab Đăng Nhập."); }
+            const existing = await firestoreDb.collection("users").doc(cred.user.uid).get().catch(() => null);
+            if (existing && existing.exists) {
+              await firebaseAuth.signOut();
+              throw new Error("Email này đã được đăng ký. Hãy chuyển sang tab Đăng Nhập.");
+            }
+            user = cred.user;
+          } else {
+            throw friendlyError(err);
+          }
+        }
+        try { await user.updateProfile({ displayName }); } catch (e) {}
+        const profile = buildNewProfile(user.uid, cleanEmail, displayName.trim(), school, phone);
+        try {
+          await firestoreDb.collection("users").doc(user.uid).set(profile);
+        } catch (e) {
+          try { await user.delete(); } catch (e2) {}
+          throw friendlyError(e);
+        }
+        profile.geminiApiKey = "";
+        cacheSession(profile);
+        return profile;
+      } finally {
+        registering = false;
+      }
+    }
+
+    // Demo
+    const users = getMockUsers();
+    if (users.some((u) => u.email === cleanEmail)) throw new Error("Email này đã được đăng ký trong hệ thống!");
+    const p = buildNewProfile("usr_" + Math.random().toString(36).slice(2, 9), cleanEmail, displayName.trim(), school, phone);
+    p.password = password; p.geminiApiKey = "";
+    users.push(p); saveMockUsers(users);
+    return p;
+  }
+
   async function loginUser(email, password) {
     const cleanEmail = email.trim().toLowerCase();
 
-    // 1. Nếu có Firebase Cloud
-    if (isFirebaseConfigured() && firebaseAuth && firestoreDb) {
-      const userCred = await firebaseAuth.signInWithEmailAndPassword(cleanEmail, password);
-      const user = userCred.user;
-      const doc = await firestoreDb.collection("users").doc(user.uid).get();
-
-      if (!doc.exists) {
-        throw new Error("Không tìm thấy hồ sơ người dùng trên Firestore!");
+    if (isCloudReady()) {
+      let cred;
+      try { cred = await firebaseAuth.signInWithEmailAndPassword(cleanEmail, password); }
+      catch (err) { throw friendlyError(err); }
+      let profile;
+      try { profile = await loadProfileFromCloud(cred.user.uid); }
+      catch (err) { await firebaseAuth.signOut(); throw friendlyError(err); }
+      if (!profile) {
+        await firebaseAuth.signOut();
+        throw new Error("Tài khoản chưa có hồ sơ hoặc đã bị Admin xóa. Hãy đăng ký lại hoặc liên hệ Admin.");
       }
-
-      const profile = doc.data();
-      currentUserProfile = profile;
-      localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(profile));
+      cacheSession(profile);
       return profile;
     }
 
-    // 2. Chế độ Mock Storage
-    const users = getMockUsers();
-    const found = users.find((u) => u.email === cleanEmail && u.password === password);
-    if (!found) {
-      throw new Error("Email hoặc mật khẩu không chính xác!");
-    }
-
-    currentUserProfile = found;
-    localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(found));
+    const found = getMockUsers().find((u) => u.email === cleanEmail && u.password === password);
+    if (!found) throw new Error("Email hoặc mật khẩu không chính xác!");
+    cacheSession(found);
     return found;
   }
 
-  /**
-   * Đăng xuất
-   */
   async function logoutUser() {
-    currentUserProfile = null;
-    localStorage.removeItem(STORAGE_KEY_SESSION);
-    if (isFirebaseConfigured() && firebaseAuth) {
-      try {
-        await firebaseAuth.signOut();
-      } catch (e) {}
-    }
+    cacheSession(null);
+    if (firebaseAuth) { try { await firebaseAuth.signOut(); } catch (e) {} }
   }
 
-  /**
-   * Lấy hồ sơ người dùng đang đăng nhập
-   */
   function getCurrentUser() {
     if (currentUserProfile) return currentUserProfile;
     try {
       const saved = localStorage.getItem(STORAGE_KEY_SESSION);
-      if (saved) {
-        currentUserProfile = JSON.parse(saved);
-        return currentUserProfile;
-      }
+      if (saved) { currentUserProfile = JSON.parse(saved); return currentUserProfile; }
     } catch (e) {}
     return null;
   }
 
-  /**
-   * Cập nhật Google Gemini API Key riêng biệt của tài khoản này
-   */
+  /** Tải lại hồ sơ từ máy chủ (dùng cho nút "Kiểm Tra Lại" khi chờ duyệt) */
+  async function refreshMyProfile() {
+    const user = getCurrentUser();
+    if (!user) return null;
+    if (isCloudReady()) {
+      const p = await loadProfileFromCloud(user.uid).catch((e) => { throw friendlyError(e); });
+      if (p) cacheSession(p);
+      return p;
+    }
+    const found = getMockUsers().find((u) => u.uid === user.uid);
+    if (found) cacheSession(found);
+    return found || null;
+  }
+
   async function updateMyGeminiKey(apiKey, modelName) {
     const user = getCurrentUser();
     if (!user) throw new Error("Chưa đăng nhập!");
-
-    user.geminiApiKey = apiKey.trim();
+    const key = (apiKey || "").trim();
+    user.geminiApiKey = key;
     if (modelName) user.geminiModel = modelName;
-    localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(user));
+    user.hasGeminiKey = Boolean(key);
+    cacheSession(user);
 
-    // Cập nhật lên Firebase Firestore
-    if (isFirebaseConfigured() && firestoreDb) {
-      await firestoreDb.collection("users").doc(user.uid).update({
-        geminiApiKey: user.geminiApiKey,
-        geminiModel: user.geminiModel
-      });
+    if (isCloudReady()) {
+      try {
+        await firestoreDb.collection("users").doc(user.uid).collection("private").doc("gemini").set({ apiKey: key });
+        await firestoreDb.collection("users").doc(user.uid).update({
+          hasGeminiKey: user.hasGeminiKey, geminiModel: user.geminiModel
+        });
+      } catch (e) { throw friendlyError(e); }
     } else {
-      // Mock storage
       const users = getMockUsers();
-      const idx = users.findIndex((u) => u.uid === user.uid);
-      if (idx !== -1) {
-        users[idx].geminiApiKey = user.geminiApiKey;
-        users[idx].geminiModel = user.geminiModel;
-        saveMockUsers(users);
-      }
+      const i = users.findIndex((u) => u.uid === user.uid);
+      if (i !== -1) { users[i].geminiApiKey = key; users[i].geminiModel = user.geminiModel; users[i].hasGeminiKey = user.hasGeminiKey; saveMockUsers(users); }
     }
   }
 
-  // =========================================================================
-  // ADMIN API: QUẢN LÝ & PHÊ DUYỆT TÀI KHOẢN
-  // =========================================================================
+  // ---------------- Admin ----------------
+  function assertAdmin() {
+    const a = getCurrentUser();
+    if (!a || a.role !== "admin") throw new Error("Chỉ Quản Trị Viên (Admin) mới có quyền này!");
+    return a;
+  }
 
-  /**
-   * Lấy danh sách toàn bộ người dùng (chỉ Admin mới được gọi)
-   */
   async function adminFetchAllUsers() {
-    const admin = getCurrentUser();
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Chỉ tài khoản Quản Trị Viên (Admin) mới có quyền truy cập chức năng này!");
+    assertAdmin();
+    if (isCloudReady()) {
+      try {
+        const snap = await firestoreDb.collection("users").get();
+        const list = [];
+        snap.forEach((d) => { const x = d.data(); x.uid = d.id; list.push(x); });
+        list.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+        return list;
+      } catch (e) { throw friendlyError(e); }
     }
-
-    if (isFirebaseConfigured() && firestoreDb) {
-      const snap = await firestoreDb.collection("users").get();
-      const list = [];
-      snap.forEach((doc) => list.push(doc.data()));
-      return list;
-    }
-
-    return getMockUsers();
+    return getMockUsers().map((u) => ({ ...u, hasGeminiKey: Boolean(u.geminiApiKey) }));
   }
 
-  /**
-   * Phê duyệt tài khoản (chuyển sang approved)
-   */
+  async function adminUpdate(targetUid, fields) {
+    assertAdmin();
+    if (isCloudReady()) {
+      try { await firestoreDb.collection("users").doc(targetUid).update(fields); }
+      catch (e) { throw friendlyError(e); }
+      return;
+    }
+    const users = getMockUsers();
+    const t = users.find((u) => u.uid === targetUid);
+    if (t) { Object.assign(t, fields); saveMockUsers(users); }
+  }
+
   async function adminApproveUser(targetUid) {
-    const admin = getCurrentUser();
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Bạn không có quyền quản trị viên!");
-    }
-
-    const now = new Date().toISOString();
-    if (isFirebaseConfigured() && firestoreDb) {
-      await firestoreDb.collection("users").doc(targetUid).update({
-        status: "approved",
-        approvedAt: now,
-        approvedBy: admin.email
-      });
-      return;
-    }
-
-    const users = getMockUsers();
-    const target = users.find((u) => u.uid === targetUid);
-    if (target) {
-      target.status = "approved";
-      target.approvedAt = now;
-      target.approvedBy = admin.email;
-      saveMockUsers(users);
-    }
+    const a = assertAdmin();
+    await adminUpdate(targetUid, { status: "approved", approvedAt: new Date().toISOString(), approvedBy: a.email });
   }
-
-  /**
-   * Khóa / Tạm dừng tài khoản (chuyển sang blocked)
-   */
   async function adminBlockUser(targetUid) {
-    const admin = getCurrentUser();
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Bạn không có quyền quản trị viên!");
-    }
-
-    if (isFirebaseConfigured() && firestoreDb) {
-      await firestoreDb.collection("users").doc(targetUid).update({
-        status: "blocked"
-      });
-      return;
-    }
-
-    const users = getMockUsers();
-    const target = users.find((u) => u.uid === targetUid);
-    if (target) {
-      target.status = "blocked";
-      saveMockUsers(users);
-    }
+    assertAdmin();
+    await adminUpdate(targetUid, { status: "blocked" });
   }
-
-  /**
-   * Xóa tài khoản
-   */
   async function adminDeleteUser(targetUid) {
-    const admin = getCurrentUser();
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Bạn không có quyền quản trị viên!");
-    }
-
-    if (isFirebaseConfigured() && firestoreDb) {
-      await firestoreDb.collection("users").doc(targetUid).delete();
+    const a = assertAdmin();
+    if (a.uid === targetUid) throw new Error("Không thể tự xóa tài khoản Admin đang đăng nhập!");
+    if (isCloudReady()) {
+      try { await firestoreDb.collection("users").doc(targetUid).delete(); }
+      catch (e) { throw friendlyError(e); }
       return;
     }
-
-    let users = getMockUsers();
-    users = users.filter((u) => u.uid !== targetUid);
-    saveMockUsers(users);
+    saveMockUsers(getMockUsers().filter((u) => u.uid !== targetUid));
   }
 
-  // Export module ra window để app.js dùng
   window.SmartAuth = {
-    initFirebase,
-    getFirebaseConfig,
-    saveFirebaseConfig,
-    isFirebaseConfigured,
-    registerUser,
-    loginUser,
-    logoutUser,
-    getCurrentUser,
-    updateMyGeminiKey,
-    adminFetchAllUsers,
-    adminApproveUser,
-    adminBlockUser,
-    adminDeleteUser,
-    ADMIN_SECRET_CODE
+    initFirebase, getFirebaseConfig, saveFirebaseConfig, isFirebaseConfigured, isCloudReady,
+    registerUser, loginUser, logoutUser, getCurrentUser, refreshMyProfile, onProfileChange,
+    updateMyGeminiKey, adminFetchAllUsers, adminApproveUser, adminBlockUser, adminDeleteUser
   };
-
 })(window);

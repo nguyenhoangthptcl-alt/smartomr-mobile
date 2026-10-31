@@ -104,12 +104,39 @@
     localStorage.setItem("smartomr_a4_scale", state.cameraA4Scale.toString());
   }
 
+  // Chống chèn mã HTML (XSS) khi hiển thị dữ liệu người dùng nhập
+  function escapeHtml(v) {
+    return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => (
+      { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+    ));
+  }
+
+  // Chỉ tài khoản đã đăng nhập VÀ được Admin duyệt mới được chấm bài
+  function requireApproved() {
+    const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
+    if (!user) {
+      alert("Vui lòng đăng nhập tài khoản giáo viên để sử dụng chức năng chấm bài.");
+      openAuthModal(false);
+      return false;
+    }
+    if (user.status === "blocked") {
+      alert("Tài khoản của thầy/cô đang bị tạm khóa. Vui lòng liên hệ Admin.");
+      return false;
+    }
+    if (user.status !== "approved") {
+      syncUserAuthUI();
+      alert("Tài khoản đang chờ Admin phê duyệt nên chưa thể chấm bài.");
+      return false;
+    }
+    return true;
+  }
+
   // =========================================================================
   // 2. KHỞI CHẠY PWA & SERVICE WORKER
   // =========================================================================
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/sw.js").then((reg) => {
+      navigator.serviceWorker.register("sw.js").then((reg) => {
         console.log("[PWA] Service Worker đã đăng ký thành công!");
       }).catch((err) => {
         console.warn("[PWA] Lỗi đăng ký Service Worker:", err);
@@ -680,16 +707,21 @@
       }
     }
 
+    if (!requireApproved()) return;
     showShutterFlash();
-    await processGradingRequest({
-      base64Data: finalBase64,
-      rawBase64: base64Data,
-      manualCorners: manualCorners,
-      templateId: templateId,
-      useGemini: useGemini,
-      sourceName: "Ảnh_Camera_" + new Date().toLocaleTimeString("vi-VN"),
-      isCameraCapture: true
-    });
+    try {
+      await processGradingRequest({
+        base64Data: finalBase64,
+        rawBase64: base64Data,
+        manualCorners: manualCorners,
+        templateId: templateId,
+        useGemini: useGemini,
+        sourceName: "Ảnh_Camera_" + new Date().toLocaleTimeString("vi-VN"),
+        isCameraCapture: true
+      });
+    } catch (err) {
+      alert("❌ " + err.message);
+    }
   }
 
   function showShutterFlash() {
@@ -713,6 +745,7 @@
   // 5. LÕI GỬI YÊU CẦU CHẤM BÀI (HỖ TRỢ BACKEND + GEMINI AI DIRECT)
   // =========================================================================
   async function processGradingRequest({ base64Data, rawBase64, manualCorners, templateId, useGemini, sourceName, isCameraCapture }) {
+    if (!requireApproved()) return null;
     const activeKey = state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_101;
     const scoringCfg = activeKey.scoring_config || DEFAULT_STRUCTURE;
 
@@ -732,8 +765,8 @@
       manual_corners: manualCorners
     };
 
-    // Ưu tiên 1: Gửi tới Backend FastAPI (nếu đang chạy localhost hoặc LAN Wi-Fi PC)
-    try {
+    // Ưu tiên 1: Gửi tới Backend FastAPI trên máy tính (chỉ khi thầy đã nhập địa chỉ máy chủ PC)
+    if (state.pcBaseUrl) try {
       const serverEndpoint = (state.pcBaseUrl ? state.pcBaseUrl.replace(/\/$/, "") : "") + "/api/grade-base64";
       const resp = await fetch(serverEndpoint, {
         method: "POST",
@@ -751,6 +784,7 @@
     }
 
     // Ưu tiên 2: Nếu chưa có kết quả và có Gemini Key -> Gọi trực tiếp Google Gemini Vision API từ điện thoại
+    let gemErrMsg = "";
     if (!gradeResult && state.geminiKey) {
       try {
         const geminiRes = await callGeminiVisionDirect(base64Data, templateId, scoringCfg);
@@ -758,13 +792,16 @@
         gradedImage = geminiRes.graded_image || base64Data;
       } catch (gemErr) {
         console.warn("[Gemini Direct Error]:", gemErr);
+        gemErrMsg = gemErr.message;
       }
     }
 
-    // Ưu tiên 3: Nếu không có mạng và không có backend -> Chấm mô phỏng giả lập Offline
+    // KHÔNG còn chấm "giả lập ngẫu nhiên": nếu không đọc được phiếu thì báo lỗi rõ ràng
     if (!gradeResult) {
-      gradeResult = mockOfflineGrade(base64Data, templateId, scoringCfg);
-      gradedImage = base64Data;
+      if (!state.geminiKey && !state.pcBaseUrl) {
+        throw new Error("Chưa thể chấm: hãy nhập Gemini API Key trong tab Cài Đặt (hoặc kết nối máy chủ PC).");
+      }
+      throw new Error(gemErrMsg || "Không đọc được phiếu. Hãy kiểm tra mạng, API Key và chụp lại rõ nét hơn.");
     }
 
     // Khớp danh sách học sinh theo SBD
@@ -840,15 +877,12 @@
   async function callGeminiVisionDirect(base64Image, templateId, scoringCfg) {
     const cleanB64 = base64Image.includes(",") ? base64Image.split(",")[1] : base64Image;
     const apiKey = state.geminiKey;
-    const modelCandidates = [
+    const modelCandidates = [...new Set([
       state.geminiModel,
-      "gemini-1.5-flash",
-      "gemini-2.0-flash",
-      "gemini-1.5-flash-latest",
-      "gemini-1.5-pro",
-      "gemini-2.0-flash-lite",
-      "gemini-flash-latest"
-    ].filter(Boolean);
+      "gemini-flash-latest",
+      "gemini-2.5-flash",
+      "gemini-2.0-flash"
+    ].filter(Boolean))];
 
     const p1Count = scoringCfg.enable_part1 ? scoringCfg.part1_count : 0;
     const p2Count = scoringCfg.enable_part2 ? scoringCfg.part2_count : 0;
@@ -865,48 +899,46 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
   "part3": {"1": "2025"}
 }`;
 
+    let lastErr = "";
     for (const model of modelCandidates) {
-      if (!model) continue;
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       const bodyPayload = {
-        contents: [
-          {
-            parts: [
-              { text: promptText },
-              { inline_data: { mime_type: "image/jpeg", data: cleanB64 } }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0.0,
-          responseMimeType: "application/json"
-        }
+        contents: [{ parts: [
+          { text: promptText },
+          { inline_data: { mime_type: "image/jpeg", data: cleanB64 } }
+        ] }],
+        generationConfig: { temperature: 0.0, responseMimeType: "application/json" }
       };
 
       try {
         const resp = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
           body: JSON.stringify(bodyPayload)
         });
 
         if (resp.ok) {
           const data = await resp.json();
-          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-          const aiJson = JSON.parse(rawText.replace(/^```json/, "").replace(/```$/, "").trim());
-
-          // Chấm điểm dựa trên đáp án chuẩn
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+          if (!rawText) { lastErr = "Gemini không trả về nội dung."; continue; }
+          const aiJson = JSON.parse(rawText.replace(/^```json/i, "").replace(/```$/, "").trim());
           return scoreFromAiRead(aiJson, templateId, scoringCfg);
         }
+
+        let detail = "";
+        try { detail = (await resp.json()).error?.message || ""; } catch (e) {}
+        lastErr = `Gemini (${model}) lỗi ${resp.status}: ${detail || resp.statusText}`;
+        // Key sai / hết quota / bị chặn: thử model khác cũng vô ích
+        if ([400, 401, 403, 429].includes(resp.status)) break;
       } catch (e) {
-        continue;
+        lastErr = `Không gọi được Gemini: ${e.message}`;
       }
     }
-    throw new Error("Không thể gọi Gemini AI với danh sách mô hình hiện tại.");
+    throw new Error(lastErr || "Không thể gọi Gemini AI.");
   }
 
   function scoreFromAiRead(aiJson, templateId, scoringCfg) {
-    const sbd = String(aiJson.sbd || "012345").padStart(6, "0").slice(0, 6);
+    const sbd = String(aiJson.sbd || "").replace(/\D/g, "").padStart(6, "0").slice(0, 6);
     const made = String(aiJson.made || state.activeMade).padStart(3, "0").slice(0, 3);
     const key = state.answerKeys[made] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_101;
 
@@ -977,41 +1009,12 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     };
   }
 
-  function mockOfflineGrade(base64Image, templateId, scoringCfg) {
-    const randSt = state.students[Math.floor(Math.random() * state.students.length)] || DEFAULT_STUDENTS[0];
-    const p1Count = scoringCfg.enable_part1 ? scoringCfg.part1_count : 24;
-    const p1Pts = scoringCfg.part1_points_each || 0.25;
-    const p1Correct = Math.max(12, Math.floor(p1Count * (0.7 + Math.random() * 0.25)));
-    const p1Score = p1Correct * p1Pts;
-
-    const p2Count = scoringCfg.enable_part2 ? scoringCfg.part2_count : 4;
-    const p2Max = scoringCfg.part2_max_points_each || 1.0;
-    const p2Score = Math.min(p2Count * p2Max, Math.round((p2Count * 0.75 * p2Max) * 100) / 100);
-
-    const total = Math.round((p1Score + p2Score) * 100) / 100;
-    const maxScore = Math.round(((p1Count * p1Pts) + (p2Count * p2Max)) * 100) / 100;
-
-    return {
-      id: Math.random().toString(36).substring(2, 9),
-      template_id: templateId,
-      sbd: randSt.sbd,
-      made: state.activeMade,
-      total_score: total,
-      max_possible_score: maxScore,
-      student_name: randSt.full_name,
-      student_class: randSt.class_name,
-      part1_summary: { enabled: scoringCfg.enable_part1, total_questions: p1Count, correct: p1Correct, score: p1Score },
-      part2_summary: { enabled: scoringCfg.enable_part2, total_questions: p2Count, total_sub_correct: p2Count * 3, score: p2Score },
-      part3_summary: { enabled: false, total_questions: 0, correct: 0, score: 0 },
-      alignment: { alignment_method: "Tự động bắt 4 góc định vị" }
-    };
-  }
-
   // =========================================================================
   // 7. CHẤM THEO LÔ TỪ THƯ VIỆN ẢNH (TAB 2)
   // =========================================================================
   async function handleBatchFiles(files) {
     if (!files || files.length === 0) return;
+    if (!requireApproved()) return;
 
     const progCard = document.getElementById("batch-progress-card");
     const progText = document.getElementById("batch-progress-text");
@@ -1020,6 +1023,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
     if (progCard) progCard.style.display = "block";
     const total = files.length;
+    const failed = [];
 
     for (let i = 0; i < total; i++) {
       const file = files[i];
@@ -1028,18 +1032,26 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
       if (progBar) progBar.style.width = `${pct}%`;
       if (progPercent) progPercent.textContent = `${pct}%`;
 
-      const b64 = await readFileAsBase64(file);
-      await processGradingRequest({
-        base64Data: b64,
-        templateId: "thpt_2025",
-        useGemini: state.autoGemini,
-        sourceName: file.name,
-        isCameraCapture: false
-      });
-      renderBatchCards();
+      try {
+        const b64 = await readFileAsBase64(file);
+        await processGradingRequest({
+          base64Data: b64,
+          templateId: "thpt_2025",
+          useGemini: state.autoGemini,
+          sourceName: file.name,
+          isCameraCapture: false
+        });
+        renderBatchCards();
+      } catch (err) {
+        failed.push(`${file.name}: ${err.message}`);
+        if (/Chưa thể chấm|API Key|Gemini/.test(err.message)) break; // lỗi cấu hình: dừng cả lô
+      }
     }
 
-    if (progText) progText.textContent = `✅ Đã chấm hoàn tất ${total} phiếu trong phiên!`;
+    if (failed.length) alert(`⚠️ ${failed.length}/${total} phiếu chưa chấm được:\n` + failed.slice(0, 5).join("\n"));
+    if (progText) progText.textContent = failed.length
+      ? `Đã xong, còn ${failed.length}/${total} phiếu lỗi.`
+      : `✅ Đã chấm hoàn tất ${total} phiếu trong phiên!`;
     setTimeout(() => {
       if (progCard) progCard.style.display = "none";
     }, 3500);
@@ -1684,195 +1696,6 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
   }
 
   // =========================================================================
-  // 12. GẮN SỰ KIỆN NÚT BẤM TOÀN HỆ THỐNG (EVENT LISTENERS)
-  // =========================================================================
-  function bindAllEvents() {
-    // Header & PWA
-    document.getElementById("btn-quick-pwa-install")?.addEventListener("click", triggerPwaInstall);
-    document.getElementById("btn-do-install-pwa")?.addEventListener("click", triggerPwaInstall);
-    document.getElementById("btn-dismiss-install")?.addEventListener("click", () => {
-      document.getElementById("pwa-install-banner").style.display = "none";
-      sessionStorage.setItem("pwa_banner_dismissed", "1");
-    });
-
-    // Session Modal
-    document.getElementById("btn-topbar-menu")?.addEventListener("click", () => {
-      document.getElementById("quick-session-modal").style.display = "flex";
-    });
-    document.getElementById("btn-close-session-modal")?.addEventListener("click", () => {
-      document.getElementById("quick-session-modal").style.display = "none";
-    });
-    document.getElementById("btn-modal-new-session")?.addEventListener("click", () => {
-      const name = prompt("Nhập tên phiên chấm mới:", "Phiên chấm " + new Date().toLocaleDateString("vi-VN"));
-      if (name) {
-        state.sessionName = name.trim();
-        state.batchItems = [];
-        state.submissions = [];
-        persistState();
-        document.getElementById("hdr-session-name").textContent = `Phiên: ${state.sessionName}`;
-        document.getElementById("quick-session-modal").style.display = "none";
-        renderBatchCards();
-        renderGradebook();
-      }
-    });
-    document.getElementById("btn-modal-save-session")?.addEventListener("click", () => {
-      exportCurrentSessionFile();
-      document.getElementById("quick-session-modal").style.display = "none";
-    });
-    document.getElementById("file-import-omr")?.addEventListener("change", (e) => {
-      if (e.target.files?.[0]) {
-        importSessionFile(e.target.files[0]);
-        document.getElementById("quick-session-modal").style.display = "none";
-      }
-    });
-    document.getElementById("btn-modal-sync-pc")?.addEventListener("click", () => {
-      document.getElementById("quick-session-modal").style.display = "none";
-      switchTab("tab-settings");
-      document.getElementById("inp-pc-server-url")?.focus();
-    });
-
-    // Camera tab controls
-    document.getElementById("btn-shutter-grade")?.addEventListener("click", captureAndGradeFromCamera);
-    document.getElementById("btn-toggle-camera-facing")?.addEventListener("click", toggleCameraFacing);
-    document.getElementById("btn-toggle-torch")?.addEventListener("click", toggleCameraTorch);
-    document.getElementById("camera-single-file-input")?.addEventListener("change", async (e) => {
-      if (e.target.files?.[0]) {
-        const b64 = await readFileAsBase64(e.target.files[0]);
-        await processGradingRequest({
-          base64Data: b64,
-          templateId: document.getElementById("cam-template-select").value || "thpt_2025",
-          useGemini: document.getElementById("chk-auto-gemini-cam").checked,
-          sourceName: e.target.files[0].name,
-          isCameraCapture: true
-        });
-      }
-    });
-
-    // Camera result sheet controls
-    document.getElementById("btn-view-graded-cam")?.addEventListener("click", () => {
-      if (state.currentViewerItem) openImageViewer(state.currentViewerItem);
-    });
-    document.getElementById("btn-dismiss-continue-cam")?.addEventListener("click", () => {
-      document.getElementById("camera-result-sheet").style.display = "none";
-    });
-    document.getElementById("btn-toggle-result-sheet")?.addEventListener("click", () => {
-      document.getElementById("camera-result-sheet").style.display = "none";
-    });
-
-    // Batch tab controls
-    document.getElementById("btn-trigger-batch-upload")?.addEventListener("click", () => {
-      document.getElementById("batch-files-input").click();
-    });
-    document.getElementById("batch-files-input")?.addEventListener("change", (e) => {
-      handleBatchFiles(Array.from(e.target.files || []));
-    });
-    document.getElementById("btn-clear-batch")?.addEventListener("click", () => {
-      if (confirm("Thầy có chắc chắn muốn xóa toàn bộ danh sách bài trong phiên này?")) {
-        state.batchItems = [];
-        persistState();
-        renderBatchCards();
-      }
-    });
-    document.getElementById("btn-export-excel-batch")?.addEventListener("click", exportGradebookExcel);
-    document.getElementById("btn-generate-sim-batch")?.addEventListener("click", async () => {
-      const progCard = document.getElementById("batch-progress-card");
-      if (progCard) progCard.style.display = "block";
-      for (let i = 0; i < 8; i++) {
-        const randSt = state.students[i % state.students.length] || DEFAULT_STUDENTS[0];
-        const res = mockOfflineGrade("", "thpt_2025", DEFAULT_STRUCTURE);
-        res.sbd = randSt.sbd;
-        res.student_name = randSt.full_name;
-        res.student_class = randSt.class_name;
-        state.batchItems.unshift({
-          id: res.id,
-          name: `Phiếu_Mẫu_${i + 1}_SBD_${randSt.sbd}`,
-          result: res,
-          graded_bgr: null,
-          orig_bgr: null,
-          timestamp: new Date().toLocaleTimeString("vi-VN")
-        });
-      }
-      persistState();
-      renderBatchCards();
-      if (progCard) progCard.style.display = "none";
-    });
-
-    // Keys & Structure Tab
-    ["cfg-p1-enable", "cfg-p1-count", "cfg-p1-pts", "cfg-p2-enable", "cfg-p2-count", "cfg-p2-pts", "cfg-p3-enable", "cfg-p3-count", "cfg-p3-pts"].forEach((id) => {
-      document.getElementById(id)?.addEventListener("input", updateScoreSummaryBanner);
-    });
-
-    document.getElementById("btn-save-structure")?.addEventListener("click", () => {
-      const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_101;
-      curKey.scoring_config = {
-        enable_part1: document.getElementById("cfg-p1-enable").checked,
-        part1_count: parseInt(document.getElementById("cfg-p1-count").value, 10) || 24,
-        part1_points_each: parseFloat(document.getElementById("cfg-p1-pts").value) || 0.25,
-        enable_part2: document.getElementById("cfg-p2-enable").checked,
-        part2_count: parseInt(document.getElementById("cfg-p2-count").value, 10) || 4,
-        part2_max_points_each: parseFloat(document.getElementById("cfg-p2-pts").value) || 1.0,
-        enable_part3: document.getElementById("cfg-p3-enable").checked,
-        part3_count: parseInt(document.getElementById("cfg-p3-count").value, 10) || 6,
-        part3_points_each: parseFloat(document.getElementById("cfg-p3-pts").value) || 0.25
-      };
-      persistState();
-      renderKeysManager();
-      alert("Đã lưu cấu hình loại hình trắc nghiệm & số câu hỏi thành công!");
-    });
-
-    document.getElementById("key-made-select")?.addEventListener("change", (e) => {
-      state.activeMade = e.target.value;
-      renderKeysManager();
-    });
-
-    document.getElementById("btn-add-made-btn")?.addEventListener("click", () => {
-      const newMade = (document.getElementById("key-new-made-input").value || "").trim().padStart(3, "0");
-      if (newMade && !state.answerKeys[newMade]) {
-        state.answerKeys[newMade] = {
-          made: newMade,
-          exam_name: "Kỳ thi THPT Quốc Gia 2025",
-          scoring_config: { ...DEFAULT_STRUCTURE },
-          part1: { ...(state.answerKeys[state.activeMade]?.part1 || DEFAULT_KEY_101.part1) },
-          part2: { ...(state.answerKeys[state.activeMade]?.part2 || DEFAULT_KEY_101.part2) },
-          part3: { ...(state.answerKeys[state.activeMade]?.part3 || DEFAULT_KEY_101.part3) }
-        };
-        state.activeMade = newMade;
-        persistState();
-        renderKeysManager();
-        document.getElementById("key-new-made-input").value = "";
-      }
-    });
-
-    document.getElementById("btn-save-key-answers")?.addEventListener("click", () => {
-      persistState();
-      alert(`Đã lưu đáp án cho Mã đề [${state.activeMade}]!`);
-    });
-
-    document.getElementById("btn-apply-fast-answers")?.addEventListener("click", applyFastAnswerString);
-
-    // Students tab controls
-    document.getElementById("file-import-students-excel")?.addEventListener("change", (e) => {
-      if (e.target.files?.[0]) importStudentsExcelFile(e.target.files[0]);
-    });
-    document.getElementById("btn-download-st-template")?.addEventListener("click", exportStudentTemplateExcel);
-    document.getElementById("btn-export-gradebook-excel")?.addEventListener("click", exportGradebookExcel);
-    document.getElementById("search-student-inp")?.addEventListener("input", renderStudentsList);
-
-    document.getElementById("btn-add-single-student")?.addEventListener("click", () => {
-      const sbd = (document.getElementById("inp-st-sbd").value || "").trim().padStart(6, "0");
-      const name = (document.getElementById("inp-st-name").value || "").trim();
-      const cls = (document.getElementById("inp-st-class").value || "12A1").trim();
-      if (!name) {
-        alert("Vui lòng nhập họ và tên học sinh!");
-        return;
-      }
-      state.students.push({ sbd, full_name: name, class_name: cls, dob: "" });
-      persistState();
-      renderStudentsList();
-      document.getElementById("inp-st-name").value = "";
-    });
-
-  // =========================================================================
   // 12. HỆ THỐNG XÁC THỰC FIREBASE & QUẢN TRỊ ADMIN (PHÊ DUYỆT TÀI KHOẢN)
   // =========================================================================
   function syncUserAuthUI() {
@@ -1918,6 +1741,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         } else if (user.status === "blocked") {
           statusEl.textContent = "❌ Đang Bị Tạm Khóa";
           statusEl.className = "status-badge-blocked";
+          if (pendingModal) pendingModal.style.display = "none";
         }
       }
 
@@ -1926,11 +1750,9 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         btnAdminPanel.style.display = user.role === "admin" ? "block" : "none";
       }
 
-      // Nạp API Key riêng biệt của user này vào hệ thống
-      if (user.geminiApiKey) {
-        state.geminiKey = user.geminiApiKey;
-        document.getElementById("cfg-gemini-key").value = user.geminiApiKey;
-      }
+      // Nạp API Key riêng của tài khoản này (không dùng nhầm key của người đăng nhập trước)
+      state.geminiKey = user.geminiApiKey || "";
+      document.getElementById("cfg-gemini-key").value = state.geminiKey;
       if (user.geminiModel) {
         state.geminiModel = user.geminiModel;
         document.getElementById("cfg-gemini-model").value = user.geminiModel;
@@ -1945,7 +1767,11 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
       }
       if (btnAdminPanel) btnAdminPanel.style.display = "none";
       if (pendingModal) pendingModal.style.display = "none";
+      state.geminiKey = "";
+      const keyInp = document.getElementById("cfg-gemini-key");
+      if (keyInp) keyInp.value = "";
     }
+    persistState();
   }
 
   function openAuthModal(isRegister = false) {
@@ -2013,7 +1839,6 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     const email = document.getElementById("inp-reg-email").value.trim();
     const pass = document.getElementById("inp-reg-password").value;
     const phone = document.getElementById("inp-reg-phone").value.trim();
-    const adminSecret = document.getElementById("inp-reg-admin-code").value.trim();
     const alertMsg = document.getElementById("auth-alert-msg");
 
     try {
@@ -2026,26 +1851,15 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         password: pass,
         displayName: name,
         school,
-        phone,
-        adminSecret
+        phone
       });
 
       alertMsg.className = "msg-box success";
-      if (newProfile.status === "approved") {
-        alertMsg.textContent = "🎉 Đăng ký tài khoản Admin thành công! Đang đăng nhập...";
-        await window.SmartAuth.loginUser(email, pass);
-        setTimeout(() => {
-          closeAuthModal();
-          syncUserAuthUI();
-        }, 1000);
-      } else {
-        alertMsg.textContent = "✅ Đăng ký thành công! Tài khoản của thầy/cô đã gửi tới Thầy Nguyễn Văn Hoàng (Admin) phê duyệt.";
-        await window.SmartAuth.loginUser(email, pass);
-        setTimeout(() => {
-          closeAuthModal();
-          syncUserAuthUI();
-        }, 1500);
-      }
+      alertMsg.textContent = "✅ Đăng ký thành công! Tài khoản đã gửi tới Admin phê duyệt.";
+      setTimeout(() => {
+        closeAuthModal();
+        syncUserAuthUI();
+      }, 1200);
     } catch (err) {
       alertMsg.className = "msg-box error";
       alertMsg.textContent = `❌ Lỗi đăng ký: ${err.message}`;
@@ -2091,19 +1905,19 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
           <div class="admin-user-card pending">
             <div class="admin-user-header">
               <div>
-                <span class="admin-user-name">${u.displayName || "Giáo Viên"}</span>
+                <span class="admin-user-name">${escapeHtml(u.displayName || "Giáo Viên")}</span>
                 <span class="badge-role teacher" style="margin-left:4px;">Chờ Duyệt</span>
               </div>
               <span style="font-size:11px;color:#94a3b8;">${u.createdAt ? new Date(u.createdAt).toLocaleDateString("vi-VN") : ""}</span>
             </div>
             <div class="admin-user-sub">
-              📧 ${u.email} | 🏫 ${u.school || "Chưa rõ trường"} ${u.phone ? `| 📞 ${u.phone}` : ""}
+              📧 ${escapeHtml(u.email)} | 🏫 ${escapeHtml(u.school || "Chưa rõ trường")} ${u.phone ? `| 📞 ${escapeHtml(u.phone)}` : ""}
             </div>
             <div class="admin-action-btns">
-              <button class="btn btn-sm btn-success btn-approve-user" data-uid="${u.uid}">
+              <button class="btn btn-sm btn-success btn-approve-user" data-uid="${escapeHtml(u.uid)}">
                 ✅ Phê Duyệt Kích Hoạt
               </button>
-              <button class="btn btn-sm btn-danger btn-delete-user" data-uid="${u.uid}">
+              <button class="btn btn-sm btn-danger btn-delete-user" data-uid="${escapeHtml(u.uid)}">
                 ✕ Từ Chối / Xóa
               </button>
             </div>
@@ -2115,8 +1929,10 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
             const uid = b.dataset.uid;
             b.disabled = true;
             b.textContent = "⏳ Đang duyệt...";
-            await window.SmartAuth.adminApproveUser(uid);
-            alert("Đã phê duyệt và kích hoạt tài khoản thành công!");
+            try {
+              await window.SmartAuth.adminApproveUser(uid);
+              alert("Đã phê duyệt và kích hoạt tài khoản thành công!");
+            } catch (e) { alert("Lỗi: " + e.message); }
             await refreshAdminUsersList();
           });
         });
@@ -2125,7 +1941,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
           b.addEventListener("click", async () => {
             if (confirm("Thầy có chắc muốn từ chối và xóa tài khoản này?")) {
               const uid = b.dataset.uid;
-              await window.SmartAuth.adminDeleteUser(uid);
+              try { await window.SmartAuth.adminDeleteUser(uid); } catch (e) { alert("Lỗi: " + e.message); }
               await refreshAdminUsersList();
             }
           });
@@ -2142,23 +1958,23 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
           <div class="admin-user-card ${u.status || 'active'}">
             <div class="admin-user-header">
               <div>
-                <strong class="admin-user-name">${u.displayName || u.email}</strong>
+                <strong class="admin-user-name">${escapeHtml(u.displayName || u.email)}</strong>
                 <span class="badge-role ${u.role === 'admin' ? 'admin' : 'teacher'}" style="margin-left:4px;">${u.role === 'admin' ? 'ADMIN' : 'GIÁO VIÊN'}</span>
               </div>
               <span style="font-size:11px;font-weight:700;color:${isApproved ? '#16a34a' : (isBlocked ? '#dc2626' : '#d97706')}">${statusLabel}</span>
             </div>
             <div class="admin-user-sub">
-              📧 ${u.email} | 🏫 ${u.school || "THPT Chi Lăng"}
-              ${u.geminiApiKey ? ' | 🔑 Đã có API Key riêng' : ' | ⚠️ Chưa cài API Key'}
+              📧 ${escapeHtml(u.email)} | 🏫 ${escapeHtml(u.school || "THPT Chi Lăng")}
+              ${(u.hasGeminiKey || u.geminiApiKey) ? ' | 🔑 Đã có API Key riêng' : ' | ⚠️ Chưa cài API Key'}
             </div>
             <div class="admin-action-btns">
               ${u.role !== 'admin' ? `
                 ${isBlocked ? `
-                  <button class="btn btn-sm btn-outline btn-toggle-block" data-uid="${u.uid}" data-action="unblock">🔓 Mở Khóa</button>
+                  <button class="btn btn-sm btn-outline btn-toggle-block" data-uid="${escapeHtml(u.uid)}" data-action="unblock">🔓 Mở Khóa</button>
                 ` : `
-                  <button class="btn btn-sm btn-outline btn-toggle-block" data-uid="${u.uid}" data-action="block">🔒 Khóa Tạm Thời</button>
+                  <button class="btn btn-sm btn-outline btn-toggle-block" data-uid="${escapeHtml(u.uid)}" data-action="block">🔒 Khóa Tạm Thời</button>
                 `}
-                <button class="btn btn-sm btn-danger btn-delete-user" data-uid="${u.uid}">🗑️ Xóa</button>
+                <button class="btn btn-sm btn-danger btn-delete-user" data-uid="${escapeHtml(u.uid)}">🗑️ Xóa</button>
               ` : '<span style="font-size:11px;color:#94a3b8;font-style:italic;">(Tài khoản quản trị viên chính)</span>'}
             </div>
           </div>
@@ -2169,11 +1985,10 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         b.addEventListener("click", async () => {
           const uid = b.dataset.uid;
           const action = b.dataset.action;
-          if (action === "block") {
-            await window.SmartAuth.adminBlockUser(uid);
-          } else {
-            await window.SmartAuth.adminApproveUser(uid);
-          }
+          try {
+            if (action === "block") await window.SmartAuth.adminBlockUser(uid);
+            else await window.SmartAuth.adminApproveUser(uid);
+          } catch (e) { alert("Lỗi: " + e.message); }
           await refreshAdminUsersList();
         });
       });
@@ -2182,7 +1997,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         b.addEventListener("click", async () => {
           if (confirm("Thầy có chắc muốn xóa vĩnh viễn tài khoản này?")) {
             const uid = b.dataset.uid;
-            await window.SmartAuth.adminDeleteUser(uid);
+            try { await window.SmartAuth.adminDeleteUser(uid); } catch (e) { alert("Lỗi: " + e.message); }
             await refreshAdminUsersList();
           }
         });
@@ -2226,7 +2041,8 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
     // Pending modal
     document.getElementById("btn-logout-from-pending")?.addEventListener("click", handleLogout);
-    document.getElementById("btn-recheck-approval")?.addEventListener("click", () => {
+    document.getElementById("btn-recheck-approval")?.addEventListener("click", async () => {
+      try { await window.SmartAuth.refreshMyProfile(); } catch (e) { alert("Không kiểm tra được: " + e.message); return; }
       syncUserAuthUI();
       const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
       if (user && user.status === "approved") {
@@ -2264,15 +2080,13 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         messagingSenderId: ""
       };
       window.SmartAuth.saveFirebaseConfig(cfg);
-      window.SmartAuth.initFirebase();
       document.getElementById("firebase-config-modal").style.display = "none";
-      alert("Đã lưu cấu hình Firebase! Hệ thống sẽ kết nối với dự án Firebase Cloud của thầy.");
+      alert("Đã lưu cấu hình Firebase! Ứng dụng sẽ tải lại để kết nối.");
+      location.reload();
     });
     document.getElementById("btn-reset-fb-mock")?.addEventListener("click", () => {
       window.SmartAuth.saveFirebaseConfig({ apiKey: "", projectId: "" });
-      window.SmartAuth.initFirebase();
-      document.getElementById("firebase-config-modal").style.display = "none";
-      alert("Đã chuyển về chế độ Local Demo để chạy thử nghiệm!");
+      window.SmartAuth.logoutUser().finally(() => location.reload());
     });
 
     // Save individual Gemini API Key for current user
@@ -2512,6 +2326,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
   // Khởi động ứng dụng
   window.addEventListener("DOMContentLoaded", () => {
     if (window.SmartAuth) {
+      window.SmartAuth.onProfileChange(() => syncUserAuthUI());
       window.SmartAuth.initFirebase();
       syncUserAuthUI();
     }
