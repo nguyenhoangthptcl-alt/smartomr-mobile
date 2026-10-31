@@ -17,6 +17,12 @@
   <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
   <link rel="stylesheet" href="style.css" />
   
+  <!-- Firebase SDK Compat (Chạy offline & online trên mọi thiết bị di động) -->
+  <script src="vendor/firebase-app-compat.js"></script>
+  <script src="vendor/firebase-auth-compat.js"></script>
+  <script src="vendor/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+
   <!-- SheetJS để đọc và xuất file Excel .xlsx hoàn toàn Offline trên điện thoại -->
   <script src="vendor/xlsx.full.min.js"></script>
 </head>
@@ -41,6 +47,9 @@
         <span class="status-dot online"></span>
         <span class="status-text">Online</span>
       </span>
+      <button class="icon-btn" id="btn-user-profile" title="Tài khoản giáo viên">
+        👤 <span id="topbar-user-name">Đăng Nhập</span>
+      </button>
       <button class="icon-btn" id="btn-quick-pwa-install" title="Cài đặt vào điện thoại" style="display:none;">
         📲 Cài App
       </button>
@@ -98,22 +107,81 @@
     <!-- ===================================================================== -->
     <section id="tab-camera" class="tab-view active">
       <div class="camera-container">
+        <!-- Thanh công cụ căn chỉnh khổ giấy A4 & 4 góc neo linh hoạt -->
+        <div class="a4-toolbar" id="a4-toolbar">
+          <div class="a4-toolbar-left">
+            <button class="a4-btn active" id="btn-a4-portrait" title="Khổ A4 Đứng chuẩn (Tỷ lệ 1:1.414)">📄 A4 Đứng</button>
+            <button class="a4-btn" id="btn-a4-landscape" title="Khổ A4 Ngang chuẩn">📑 A4 Ngang</button>
+            <div class="a4-size-control">
+              <button class="a4-btn-icon" id="btn-a4-size-dec" title="Thu nhỏ khung">➖</button>
+              <span class="a4-size-val" id="a4-size-text">82%</span>
+              <button class="a4-btn-icon" id="btn-a4-size-inc" title="Phóng to khung">➕</button>
+            </div>
+          </div>
+          <div class="a4-toolbar-right">
+            <button class="a4-btn a4-btn-toggle" id="btn-toggle-anchor-lock" title="Chuyển chế độ kéo 4 góc">
+              <span id="anchor-lock-icon">✏️</span> <span id="anchor-lock-text">Chỉnh Góc</span>
+            </button>
+            <button class="a4-btn-icon" id="btn-reset-anchors" title="Đặt lại góc A4 chuẩn cân giữa">🔄</button>
+          </div>
+        </div>
+
         <!-- Khung ngắm video camera -->
         <div class="viewfinder-box" id="viewfinder-wrapper">
           <video id="camera-stream" autoplay playsinline muted></video>
           <canvas id="camera-capture-canvas" style="display: none;"></canvas>
           
-          <!-- Lưới căn chỉnh 4 góc định vị -->
-          <div class="viewfinder-overlay">
-            <div class="guide-box">
-              <div class="corner-target tl"></div>
-              <div class="corner-target tr"></div>
-              <div class="corner-target br"></div>
-              <div class="corner-target bl"></div>
-              <div class="center-cross"></div>
+          <!-- Lớp phủ căn chỉnh 4 điểm neo góc tương tác linh hoạt -->
+          <div class="corner-overlay-layer" id="corner-overlay-layer">
+            <svg id="corner-overlay-svg" class="corner-svg">
+              <defs>
+                <filter id="corner-glow" x="-20%" y="-20%" width="140%" height="140%">
+                  <feGaussianBlur stdDeviation="3" result="blur" />
+                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
+                </filter>
+              </defs>
+              <mask id="corner-mask">
+                <rect width="100%" height="100%" fill="white" />
+                <polygon id="svg-mask-polygon" fill="black" />
+              </mask>
+              <!-- Lớp tối nhẹ ngoài 4 góc làm nổi bật tờ phiếu -->
+              <rect width="100%" height="100%" fill="rgba(0, 0, 0, 0.42)" mask="url(#corner-mask)" />
+              
+              <!-- Khung đa giác nối 4 điểm neo -->
+              <polygon id="svg-corner-poly" class="corner-poly" />
+              
+              <!-- Đường chéo phụ tâm -->
+              <line id="svg-diag-1" stroke="rgba(255, 255, 255, 0.25)" stroke-dasharray="3 3" />
+              <line id="svg-diag-2" stroke="rgba(255, 255, 255, 0.25)" stroke-dasharray="3 3" />
+            </svg>
+
+            <!-- Vùng chạm giữa để dịch chuyển toàn bộ 4 góc -->
+            <div class="anchor-pan-area" id="anchor-pan-area" title="Chạm và kéo để dịch chuyển toàn bộ khung"></div>
+
+            <!-- 4 Điểm neo góc chạm kéo cảm ứng (Touch / Mouse Draggable) -->
+            <div class="corner-anchor-handle" id="anchor-tl" data-corner="tl">
+              <div class="anchor-core">
+                <span class="anchor-tag">TL</span>
+              </div>
             </div>
+            <div class="corner-anchor-handle" id="anchor-tr" data-corner="tr">
+              <div class="anchor-core">
+                <span class="anchor-tag">TR</span>
+              </div>
+            </div>
+            <div class="corner-anchor-handle" id="anchor-br" data-corner="br">
+              <div class="anchor-core">
+                <span class="anchor-tag">BR</span>
+              </div>
+            </div>
+            <div class="corner-anchor-handle" id="anchor-bl" data-corner="bl">
+              <div class="anchor-core">
+                <span class="anchor-tag">BL</span>
+              </div>
+            </div>
+
             <div class="guide-hint" id="camera-guide-hint">
-              Đưa 4 ô vuông đen góc phiếu vào trong 4 góc ngắm
+              📐 Kéo 4 điểm xanh khớp 4 góc phiếu A4 hoặc chọn [A4 Đứng] để vừa khổ giấy
             </div>
           </div>
         </div>
@@ -473,21 +541,69 @@
     </section>
 
     <!-- ===================================================================== -->
-    <!-- TAB 5: ⚙️ CÀI ĐẶT, GEMINI AI & ĐỒNG BỘ MÁY TÍNH -->
+    <!-- TAB 5: ⚙️ CÀI ĐẶT, TÀI KHOẢN, GEMINI AI & ĐỒNG BỘ MÁY TÍNH -->
     <!-- ===================================================================== -->
     <section id="tab-settings" class="tab-view">
       <div class="view-content">
-        <!-- 1. Cài đặt Gemini AI -->
-        <div class="card">
+
+        <!-- 1. Quản lý Tài Khoản Người Dùng & Phân Quyền Admin -->
+        <div class="card" id="card-user-account-info">
+          <div class="card-header flex-between">
+            <h3>👤 Tài Khoản Giáo Viên</h3>
+            <span class="badge-role" id="badge-my-role">CHƯA ĐĂNG NHẬP</span>
+          </div>
+          <div class="user-account-details" id="box-user-logged-in" style="display: none;">
+            <div class="user-info-row">
+              <div class="user-avatar" id="avatar-user-initial">GV</div>
+              <div class="user-meta-info">
+                <strong id="my-display-name">Thầy Nguyễn Văn Hoàng</strong>
+                <div class="user-school" id="my-school-name">THPT Chi Lăng, Lạng Sơn</div>
+                <div class="user-email" id="my-email-address">hoang.thptchilang@gmail.com</div>
+              </div>
+            </div>
+            
+            <div class="user-status-strip">
+              Trạng thái tài khoản: <strong id="my-account-status" class="status-badge-ok">Đã Kích Hoạt</strong>
+            </div>
+
+            <!-- Các nút hành động tài khoản -->
+            <div class="form-row" style="margin-top: 10px; gap: 6px;">
+              <button class="btn btn-sm btn-outline btn-block" id="btn-open-admin-panel" style="display: none; background: #fef3c7; color: #92400e; border-color: #fcd34d;">
+                🛡️ Bảng Quản Trị Duyệt Thành Viên
+              </button>
+              <button class="btn btn-sm btn-outline btn-block" id="btn-open-firebase-config">
+                🔥 Cấu Hình Firebase
+              </button>
+              <button class="btn btn-sm btn-danger btn-block" id="btn-action-logout">
+                🚪 Đăng Xuất
+              </button>
+            </div>
+          </div>
+
+          <!-- Khi chưa đăng nhập -->
+          <div id="box-user-not-logged" style="padding: 10px 0;">
+            <p class="card-desc" style="margin-bottom: 10px;">
+              Đăng nhập tài khoản giáo viên để tự động lưu đáp án, bảng điểm học sinh và sử dụng khóa Google Gemini API Key riêng biệt của chính mình.
+            </p>
+            <div class="form-row">
+              <button class="btn btn-primary btn-block" id="btn-trigger-login-modal">
+                🔑 Đăng Nhập / Đăng Ký Tài Khoản
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 2. Cài đặt Gemini AI RIÊNG BIỆT CHO MỖI TÀI KHOẢN -->
+        <div class="card" style="margin-top: 12px;">
           <div class="card-header">
-            <h3>🤖 Cài Đặt Khóa Google Gemini AI</h3>
+            <h3>🤖 Khóa Google Gemini AI Riêng Biệt Của Bạn</h3>
           </div>
           <p class="card-desc">
-            Nhận diện và chấm chính xác những phiếu chụp bị bóng tối, nhăn giấy hoặc học sinh tô bút chì mờ.
+            💡 <strong>Mỗi tài khoản lưu và sử dụng khóa API riêng:</strong> Để không dùng chung lượt gọi làm cạn kiệt hạn ngạch (quota) của nhau, mỗi thầy/cô tự nhập khóa Gemini API của mình. Khóa này chỉ lưu cho riêng tài khoản hiện tại.
           </p>
 
           <div class="form-group">
-            <label>Khóa Google Gemini API Key (Lấy tại aistudio.google.com):</label>
+            <label>Khóa Google Gemini API Key của bạn (Lấy miễn phí tại aistudio.google.com):</label>
             <div style="display: flex; gap: 4px;">
               <input type="password" id="cfg-gemini-key" placeholder="AIzaSy..." class="form-input" />
               <button class="btn btn-outline" id="btn-toggle-key-eye">👁️</button>
@@ -497,21 +613,21 @@
           <div class="form-group">
             <label>Mô hình Gemini sử dụng:</label>
             <select id="cfg-gemini-model" class="form-select">
-              <option value="gemini-flash-latest">gemini-flash-latest (Mới nhất & Khuyên dùng)</option>
-              <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Siêu nhanh)</option>
-              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro (Độ chính xác cao)</option>
+              <option value="gemini-1.5-flash">gemini-1.5-flash (Khuyên dùng - Ổn định nhất)</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash (Thế hệ mới siêu tốc)</option>
+              <option value="gemini-1.5-pro">gemini-1.5-pro (Độ chính xác cao cho phiếu mờ)</option>
+              <option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite (Siêu nhẹ)</option>
             </select>
           </div>
 
           <label class="switch-label" style="margin: 8px 0;">
             <input type="checkbox" id="cfg-auto-gemini-toggle" />
-            <span>Tự động kích hoạt Gemini AI khi phiếu bị mờ hoặc khuyết SBD/Mã đề</span>
+            <span>Tự động gọi Gemini AI khi phiếu mờ, chụp xiên hoặc tô bút chì nhạt</span>
           </label>
 
           <div style="display: flex; gap: 8px; margin-top: 10px;">
-            <button class="btn btn-outline" id="btn-test-gemini-key">🔍 Kiểm Tra Kết Nối</button>
-            <button class="btn btn-primary" id="btn-save-gemini-key">💾 Lưu Khóa API</button>
+            <button class="btn btn-outline" id="btn-test-gemini-key">🔍 Kiểm Tra Khóa</button>
+            <button class="btn btn-primary" id="btn-save-gemini-key">💾 Lưu Khóa Của Tôi</button>
           </div>
           <div id="gemini-test-msg" class="msg-box" style="display: none; margin-top: 8px;"></div>
         </div>
@@ -607,6 +723,187 @@
         <div class="btn-group">
           <a id="btn-download-viewer-img" download="Phieu_Da_Cham.jpg" class="btn btn-sm btn-outline">⬇️ Tải Ảnh</a>
           <button id="btn-gemini-from-viewer" class="btn btn-sm btn-primary">🤖 Đọc Lại Bằng Gemini</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 1: ĐĂNG NHẬP / ĐĂNG KÝ TÀI KHOẢN (FIREBASE AUTH) -->
+  <!-- ===================================================================== -->
+  <div id="auth-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card" style="max-width: 420px;">
+      <div class="modal-header">
+        <h3 id="auth-modal-title">🔐 Đăng Nhập Giáo Viên</h3>
+        <button class="modal-close" id="btn-close-auth-modal">✕</button>
+      </div>
+      <div class="modal-body">
+        <!-- Chuyển đổi Đăng nhập / Đăng ký -->
+        <div class="auth-switch-tabs">
+          <button class="auth-tab-btn active" id="tab-btn-show-login">Đăng Nhập</button>
+          <button class="auth-tab-btn" id="tab-btn-show-register">Đăng Ký Tài Khoản</button>
+        </div>
+
+        <!-- FORM ĐĂNG NHẬP -->
+        <form id="form-login" style="margin-top: 14px;">
+          <div class="form-group">
+            <label>Địa chỉ Email:</label>
+            <input type="email" id="inp-login-email" placeholder="VD: giaovien@gmail.com" required class="form-input" />
+          </div>
+          <div class="form-group">
+            <label>Mật khẩu:</label>
+            <input type="password" id="inp-login-password" placeholder="Nhập mật khẩu" required class="form-input" />
+          </div>
+          <button type="submit" class="btn btn-primary btn-block" style="margin-top: 10px; padding: 12px;">
+            🚀 Đăng Nhập
+          </button>
+        </form>
+
+        <!-- FORM ĐĂNG KÝ -->
+        <form id="form-register" style="display: none; margin-top: 14px;">
+          <div class="form-group">
+            <label>Họ và Tên Giáo Viên (*):</label>
+            <input type="text" id="inp-reg-name" placeholder="VD: Nguyễn Văn Hoàng" required class="form-input" />
+          </div>
+          <div class="form-group">
+            <label>Đơn vị công tác / Trường học (*):</label>
+            <input type="text" id="inp-reg-school" placeholder="VD: Trường THPT Chi Lăng, Lạng Sơn" required class="form-input" />
+          </div>
+          <div class="form-group">
+            <label>Địa chỉ Email (*):</label>
+            <input type="email" id="inp-reg-email" placeholder="VD: giaovien@gmail.com" required class="form-input" />
+          </div>
+          <div class="form-group">
+            <label>Mật khẩu (*):</label>
+            <input type="password" id="inp-reg-password" placeholder="Ít nhất 6 ký tự" minlength="6" required class="form-input" />
+          </div>
+          <div class="form-group">
+            <label>Số điện thoại liên hệ:</label>
+            <input type="tel" id="inp-reg-phone" placeholder="VD: 0988..." class="form-input" />
+          </div>
+          <div class="form-group">
+            <label style="color:#d97706;">Mã kích hoạt Admin (Dành cho Thầy Hoàng):</label>
+            <input type="password" id="inp-reg-admin-code" placeholder="Để trống nếu là giáo viên đăng ký" class="form-input" />
+          </div>
+          <p style="font-size: 11px; color: #64748b; margin-bottom: 10px;">
+            * Tài khoản đăng ký mới sẽ được gửi tới <strong>Thầy Nguyễn Văn Hoàng (Admin)</strong> phê duyệt để kích hoạt sử dụng.
+          </p>
+          <button type="submit" class="btn btn-success btn-block" style="padding: 12px;">
+            📝 Đăng Ký Tài Khoản
+          </button>
+        </form>
+
+        <div id="auth-alert-msg" class="msg-box" style="display: none; margin-top: 12px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 2: THÔNG BÁO TÀI KHOẢN CHỜ ADMIN PHÊ DUYỆT -->
+  <!-- ===================================================================== -->
+  <div id="pending-approval-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card" style="max-width: 400px; text-align: center;">
+      <div class="modal-body" style="padding: 24px 20px;">
+        <div style="font-size: 46px; margin-bottom: 8px;">⏳</div>
+        <h3 style="color: #d97706; font-size: 18px; margin-bottom: 8px;">Tài Khoản Đang Chờ Phê Duyệt</h3>
+        <p style="font-size: 13.5px; color: #334155; line-height: 1.5; margin-bottom: 14px;">
+          Xin chào thầy/cô <strong id="pending-user-name">...</strong>!<br />
+          Tài khoản của thầy/cô đã được tạo thành công và đang chờ <strong>Thầy Nguyễn Văn Hoàng (Admin Trường THPT Chi Lăng)</strong> phê duyệt để đảm bảo an toàn hệ thống.
+        </p>
+        <div style="background: #fef3c7; border: 1px solid #fde68a; border-radius: 8px; padding: 10px; font-size: 12px; color: #92400e; margin-bottom: 16px;">
+          📞 Thầy/cô vui lòng liên hệ Admin Thầy Hoàng để được duyệt kích hoạt nhanh chóng.
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn btn-primary btn-block" id="btn-recheck-approval">🔄 Kiểm Tra Lại</button>
+          <button class="btn btn-outline btn-block" id="btn-logout-from-pending">🚪 Đăng Xuất</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 3: BẢNG QUẢN TRỊ VIÊN PHÊ DUYỆT NGƯỜI DÙNG (DÀNH CHO ADMIN) -->
+  <!-- ===================================================================== -->
+  <div id="admin-panel-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card" style="max-width: 680px; max-height: 85vh; display: flex; flex-direction: column;">
+      <div class="modal-header" style="background: #1e3a8a;">
+        <h3>🛡️ Bảng Quản Trị Viên — Phê Duyệt Tài Khoản</h3>
+        <button class="modal-close" id="btn-close-admin-panel">✕</button>
+      </div>
+      <div class="modal-body" style="flex: 1; overflow-y: auto; padding: 14px;">
+        <!-- Thống kê Admin -->
+        <div class="stats-grid-row" style="margin-bottom: 12px;">
+          <div class="stat-box">
+            <span class="stat-val" id="admin-stat-total">0</span>
+            <span class="stat-lbl">Tổng thành viên</span>
+          </div>
+          <div class="stat-box" style="border-color: #fde68a; background: #fffbeb;">
+            <span class="stat-val" id="admin-stat-pending" style="color: #d97706;">0</span>
+            <span class="stat-lbl">Chờ Phê Duyệt</span>
+          </div>
+          <div class="stat-box" style="border-color: #bbf7d0; background: #f0fdf4;">
+            <span class="stat-val" id="admin-stat-active" style="color: #16a34a;">0</span>
+            <span class="stat-lbl">Đang Hoạt Động</span>
+          </div>
+        </div>
+
+        <!-- Danh sách tài khoản chờ duyệt -->
+        <div class="admin-section">
+          <h4 style="font-size: 13.5px; color: #d97706; margin-bottom: 8px;">
+            ⏳ Danh Sách Tài Khoản Đang Chờ Duyệt (<span id="count-pending-users">0</span>)
+          </h4>
+          <div id="admin-pending-users-list" class="admin-users-list">
+            <div style="padding: 12px; text-align: center; color: #94a3b8; font-size: 12px;">
+              Không có tài khoản nào đang chờ duyệt.
+            </div>
+          </div>
+        </div>
+
+        <!-- Danh sách tất cả tài khoản -->
+        <div class="admin-section" style="margin-top: 16px;">
+          <h4 style="font-size: 13.5px; color: #1e3a8a; margin-bottom: 8px;">
+            👥 Danh Sách Tất Cả Thành Viên
+          </h4>
+          <div id="admin-all-users-list" class="admin-users-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================================== -->
+  <!-- MODAL 4: CẤU HÌNH FIREBASE CLOUD (DÀNH CHO ADMIN) -->
+  <!-- ===================================================================== -->
+  <div id="firebase-config-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card" style="max-width: 480px;">
+      <div class="modal-header">
+        <h3>🔥 Cấu Hình Dự Án Firebase Cloud</h3>
+        <button class="modal-close" id="btn-close-fb-config">✕</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 12.5px; color: #475569; line-height: 1.45; margin-bottom: 12px;">
+          Thầy Hoàng có thể tạo dự án Firebase miễn phí tại <strong>console.firebase.google.com</strong> rồi dán thông tin cấu hình vào đây để lưu trữ người dùng và duyệt tài khoản online 24/7.
+        </p>
+
+        <div class="form-group">
+          <label>API Key (apiKey):</label>
+          <input type="text" id="fb-cfg-apikey" placeholder="AIzaSy..." class="form-input" />
+        </div>
+        <div class="form-group">
+          <label>Project ID (projectId):</label>
+          <input type="text" id="fb-cfg-projectid" placeholder="smartomr-pro-vn" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label>Auth Domain (authDomain):</label>
+          <input type="text" id="fb-cfg-authdomain" placeholder="smartomr-pro-vn.firebaseapp.com" class="form-input" />
+        </div>
+        <div class="form-group">
+          <label>App ID (appId):</label>
+          <input type="text" id="fb-cfg-appid" placeholder="1:123456789:web:abcdef" class="form-input" />
+        </div>
+
+        <div style="display: flex; gap: 8px; margin-top: 14px;">
+          <button class="btn btn-outline btn-block" id="btn-reset-fb-mock">🔄 Dùng Local Demo</button>
+          <button class="btn btn-primary btn-block" id="btn-save-fb-config">💾 Lưu Cấu Hình</button>
         </div>
       </div>
     </div>

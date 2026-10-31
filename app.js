@@ -71,11 +71,21 @@
     cameraFacing: "environment", // "environment" (sau) hoặc "user" (trước)
     cameraStream: null,
     cameraTorch: false,
+    cameraAnchors: JSON.parse(localStorage.getItem("smartomr_camera_anchors") || "null") || {
+      tl: { x: 0.12, y: 0.10 },
+      tr: { x: 0.88, y: 0.10 },
+      br: { x: 0.88, y: 0.86 },
+      bl: { x: 0.12, y: 0.86 }
+    },
+    cameraAnchorLock: localStorage.getItem("smartomr_anchor_locked") === "true",
+    cameraA4Mode: localStorage.getItem("smartomr_a4_mode") || "portrait", // "portrait" or "landscape"
+    cameraA4Scale: parseFloat(localStorage.getItem("smartomr_a4_scale") || "0.82"),
     batchItems: [], // Danh sách các bài đã chấm trong lô hiện tại
     currentViewerItem: null,
     deferredPrompt: null,
     isOnline: navigator.onLine,
-    pcBaseUrl: localStorage.getItem("smartomr_pc_url") || ""
+    pcBaseUrl: localStorage.getItem("smartomr_pc_url") || "",
+    currentUser: null
   };
 
   // Lưu state vào LocalStorage
@@ -88,6 +98,10 @@
     localStorage.setItem("smartomr_gemini_model", state.geminiModel);
     localStorage.setItem("smartomr_auto_gemini", state.autoGemini ? "true" : "false");
     localStorage.setItem("smartomr_pc_url", state.pcBaseUrl);
+    localStorage.setItem("smartomr_camera_anchors", JSON.stringify(state.cameraAnchors));
+    localStorage.setItem("smartomr_anchor_locked", state.cameraAnchorLock ? "true" : "false");
+    localStorage.setItem("smartomr_a4_mode", state.cameraA4Mode);
+    localStorage.setItem("smartomr_a4_scale", state.cameraA4Scale.toString());
   }
 
   // =========================================================================
@@ -164,6 +178,7 @@
     // Bật/tắt camera tự động khi chuyển tab
     if (tabId === "tab-camera") {
       startCamera();
+      setTimeout(() => renderCornerOverlay(), 120);
     } else {
       stopCamera();
     }
@@ -205,6 +220,7 @@
       state.cameraStream = stream;
       video.srcObject = stream;
       await video.play();
+      setTimeout(() => renderCornerOverlay(), 100);
     } catch (err) {
       console.warn("[Camera] Không thể mở camera trực tiếp:", err);
       const hint = document.getElementById("camera-guide-hint");
@@ -243,6 +259,392 @@
     }
   }
 
+  // =========================================================================
+  // 4B. QUẢN LÝ 4 ĐIỂM NEO GÓC KHỔ GIẤY A4 LINH HOẠT & NẮN PHỐI CẢNH
+  // =========================================================================
+  function initCameraCornerOverlay() {
+    const btnPortrait = document.getElementById("btn-a4-portrait");
+    const btnLandscape = document.getElementById("btn-a4-landscape");
+    const btnSizeDec = document.getElementById("btn-a4-size-dec");
+    const btnSizeInc = document.getElementById("btn-a4-size-inc");
+    const btnToggleLock = document.getElementById("btn-toggle-anchor-lock");
+    const btnReset = document.getElementById("btn-reset-anchors");
+
+    btnPortrait?.addEventListener("click", () => setA4Mode("portrait"));
+    btnLandscape?.addEventListener("click", () => setA4Mode("landscape"));
+    btnSizeDec?.addEventListener("click", () => adjustA4Scale(-0.04));
+    btnSizeInc?.addEventListener("click", () => adjustA4Scale(+0.04));
+    btnToggleLock?.addEventListener("click", toggleAnchorLock);
+    btnReset?.addEventListener("click", () => resetToDefaultA4());
+
+    // Gắn sự kiện kéo chạm cảm ứng cho 4 điểm neo
+    const handleIds = ["anchor-tl", "anchor-tr", "anchor-br", "anchor-bl"];
+    handleIds.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const cornerKey = el.getAttribute("data-corner");
+      let isDragging = false;
+
+      el.addEventListener("pointerdown", (e) => {
+        if (state.cameraAnchorLock) return;
+        isDragging = true;
+        el.classList.add("dragging");
+        try { el.setPointerCapture(e.pointerId); } catch (_) {}
+        e.stopPropagation();
+        e.preventDefault();
+      });
+
+      el.addEventListener("pointermove", (e) => {
+        if (!isDragging) return;
+        const layer = document.getElementById("corner-overlay-layer");
+        if (!layer) return;
+        const rect = layer.getBoundingClientRect();
+        const normX = Math.max(0.02, Math.min(0.98, (e.clientX - rect.left) / rect.width));
+        const normY = Math.max(0.02, Math.min(0.98, (e.clientY - rect.top) / rect.height));
+
+        state.cameraAnchors[cornerKey] = { x: normX, y: normY };
+        renderCornerOverlay();
+      });
+
+      const stopDrag = (e) => {
+        if (!isDragging) return;
+        isDragging = false;
+        el.classList.remove("dragging");
+        try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+        persistState();
+      };
+
+      el.addEventListener("pointerup", stopDrag);
+      el.addEventListener("pointercancel", stopDrag);
+    });
+
+    // Gắn sự kiện kéo cả khung (Pan)
+    const panArea = document.getElementById("anchor-pan-area");
+    if (panArea) {
+      let isPanning = false;
+      let startX = 0, startY = 0;
+      let startAnchors = null;
+
+      panArea.addEventListener("pointerdown", (e) => {
+        if (state.cameraAnchorLock) return;
+        isPanning = true;
+        try { panArea.setPointerCapture(e.pointerId); } catch (_) {}
+        startX = e.clientX;
+        startY = e.clientY;
+        startAnchors = JSON.parse(JSON.stringify(state.cameraAnchors));
+        e.stopPropagation();
+        e.preventDefault();
+      });
+
+      panArea.addEventListener("pointermove", (e) => {
+        if (!isPanning || !startAnchors) return;
+        const layer = document.getElementById("corner-overlay-layer");
+        if (!layer) return;
+        const rect = layer.getBoundingClientRect();
+        const deltaX = (e.clientX - startX) / rect.width;
+        const deltaY = (e.clientY - startY) / rect.height;
+
+        const keys = ["tl", "tr", "br", "bl"];
+        let canMove = true;
+        for (const k of keys) {
+          const nx = startAnchors[k].x + deltaX;
+          const ny = startAnchors[k].y + deltaY;
+          if (nx < 0.02 || nx > 0.98 || ny < 0.02 || ny > 0.98) {
+            canMove = false;
+            break;
+          }
+        }
+        if (canMove) {
+          for (const k of keys) {
+            state.cameraAnchors[k].x = startAnchors[k].x + deltaX;
+            state.cameraAnchors[k].y = startAnchors[k].y + deltaY;
+          }
+          renderCornerOverlay();
+        }
+      });
+
+      const stopPan = (e) => {
+        if (!isPanning) return;
+        isPanning = false;
+        try { panArea.releasePointerCapture(e.pointerId); } catch (_) {}
+        persistState();
+      };
+
+      panArea.addEventListener("pointerup", stopPan);
+      panArea.addEventListener("pointercancel", stopPan);
+    }
+
+    updateLockUI();
+    updateA4ToolbarUI();
+    renderCornerOverlay();
+
+    const layer = document.getElementById("corner-overlay-layer");
+    if (layer && window.ResizeObserver) {
+      new ResizeObserver(() => renderCornerOverlay()).observe(layer);
+    }
+  }
+
+  function setA4Mode(mode) {
+    state.cameraA4Mode = mode;
+    resetToDefaultA4();
+  }
+
+  function adjustA4Scale(delta) {
+    let newScale = Math.max(0.48, Math.min(0.96, state.cameraA4Scale + delta));
+    newScale = Math.round(newScale * 100) / 100;
+    
+    const keys = ["tl", "tr", "br", "bl"];
+    const cx = keys.reduce((s, k) => s + state.cameraAnchors[k].x, 0) / 4;
+    const cy = keys.reduce((s, k) => s + state.cameraAnchors[k].y, 0) / 4;
+    const ratio = newScale / state.cameraA4Scale;
+
+    let valid = true;
+    const temp = {};
+    for (const k of keys) {
+      const nx = cx + (state.cameraAnchors[k].x - cx) * ratio;
+      const ny = cy + (state.cameraAnchors[k].y - cy) * ratio;
+      if (nx < 0.02 || nx > 0.98 || ny < 0.02 || ny > 0.98) {
+        valid = false;
+        break;
+      }
+      temp[k] = { x: nx, y: ny };
+    }
+
+    if (valid) {
+      state.cameraA4Scale = newScale;
+      state.cameraAnchors = temp;
+      updateA4ToolbarUI();
+      renderCornerOverlay();
+      persistState();
+    }
+  }
+
+  function resetToDefaultA4() {
+    const layer = document.getElementById("corner-overlay-layer");
+    const rect = layer ? layer.getBoundingClientRect() : { width: 360, height: 600 };
+    const W = rect.width || 360;
+    const H = rect.height || 600;
+
+    const a4Ratio = 1 / 1.4142; // Tỷ lệ rộng / cao khổ A4 đứng (~0.707)
+    let targetW, targetH;
+
+    if (state.cameraA4Mode === "landscape") {
+      targetH = H * state.cameraA4Scale * 0.72;
+      targetW = targetH / a4Ratio;
+      if (targetW > W * 0.94) {
+        targetW = W * 0.94;
+        targetH = targetW * a4Ratio;
+      }
+    } else {
+      // Portrait
+      targetW = W * state.cameraA4Scale;
+      targetH = targetW / a4Ratio;
+      if (targetH > H * 0.88) {
+        targetH = H * 0.88;
+        targetW = targetH * a4Ratio;
+      }
+    }
+
+    const x0 = (W - targetW) / 2;
+    const y0 = (H - targetH) / 2;
+
+    state.cameraAnchors = {
+      tl: { x: x0 / W, y: y0 / H },
+      tr: { x: (x0 + targetW) / W, y: y0 / H },
+      br: { x: (x0 + targetW) / W, y: (y0 + targetH) / H },
+      bl: { x: x0 / W, y: (y0 + targetH) / H }
+    };
+
+    updateA4ToolbarUI();
+    renderCornerOverlay();
+    persistState();
+  }
+
+  function toggleAnchorLock() {
+    state.cameraAnchorLock = !state.cameraAnchorLock;
+    updateLockUI();
+    persistState();
+  }
+
+  function updateLockUI() {
+    const btn = document.getElementById("btn-toggle-anchor-lock");
+    const icon = document.getElementById("anchor-lock-icon");
+    const txt = document.getElementById("anchor-lock-text");
+    const poly = document.getElementById("svg-corner-poly");
+    const panArea = document.getElementById("anchor-pan-area");
+    const hint = document.getElementById("camera-guide-hint");
+
+    const handles = ["anchor-tl", "anchor-tr", "anchor-br", "anchor-bl"].map(id => document.getElementById(id));
+
+    if (state.cameraAnchorLock) {
+      if (btn) {
+        btn.className = "a4-btn a4-btn-toggle mode-locked";
+        if (icon) icon.textContent = "🔒";
+        if (txt) txt.textContent = "Đã Khóa";
+      }
+      if (poly) poly.classList.add("locked");
+      if (panArea) panArea.classList.add("locked");
+      handles.forEach(h => h?.classList.add("locked"));
+      if (hint) hint.textContent = "🔒 Đã khóa 4 góc. Nhắm phiếu vừa khung rồi bấm nút chụp!";
+    } else {
+      if (btn) {
+        btn.className = "a4-btn a4-btn-toggle mode-editing";
+        if (icon) icon.textContent = "✏️";
+        if (txt) txt.textContent = "Chỉnh Góc";
+      }
+      if (poly) poly.classList.remove("locked");
+      if (panArea) panArea.classList.remove("locked");
+      handles.forEach(h => h?.classList.remove("locked"));
+      if (hint) hint.textContent = "📐 Chạm & Kéo 4 điểm xanh bằng ngón tay để khớp 4 góc phiếu A4";
+    }
+  }
+
+  function updateA4ToolbarUI() {
+    const btnP = document.getElementById("btn-a4-portrait");
+    const btnL = document.getElementById("btn-a4-landscape");
+    const txtScale = document.getElementById("a4-size-text");
+
+    if (btnP) btnP.className = state.cameraA4Mode === "portrait" ? "a4-btn active" : "a4-btn";
+    if (btnL) btnL.className = state.cameraA4Mode === "landscape" ? "a4-btn active" : "a4-btn";
+    if (txtScale) txtScale.textContent = Math.round(state.cameraA4Scale * 100) + "%";
+  }
+
+  function renderCornerOverlay() {
+    const layer = document.getElementById("corner-overlay-layer");
+    if (!layer) return;
+    const W = layer.clientWidth;
+    const H = layer.clientHeight;
+    if (!W || !H) return;
+
+    const { tl, tr, br, bl } = state.cameraAnchors;
+
+    const pTL = { x: tl.x * W, y: tl.y * H };
+    const pTR = { x: tr.x * W, y: tr.y * H };
+    const pBR = { x: br.x * W, y: br.y * H };
+    const pBL = { x: bl.x * W, y: bl.y * H };
+
+    const hTL = document.getElementById("anchor-tl");
+    const hTR = document.getElementById("anchor-tr");
+    const hBR = document.getElementById("anchor-br");
+    const hBL = document.getElementById("anchor-bl");
+
+    if (hTL) { hTL.style.left = pTL.x + "px"; hTL.style.top = pTL.y + "px"; }
+    if (hTR) { hTR.style.left = pTR.x + "px"; hTR.style.top = pTR.y + "px"; }
+    if (hBR) { hBR.style.left = pBR.x + "px"; hBR.style.top = pBR.y + "px"; }
+    if (hBL) { hBL.style.left = pBL.x + "px"; hBL.style.top = pBL.y + "px"; }
+
+    const poly = document.getElementById("svg-corner-poly");
+    const maskPoly = document.getElementById("svg-mask-polygon");
+    const ptsStr = `${pTL.x.toFixed(1)},${pTL.y.toFixed(1)} ${pTR.x.toFixed(1)},${pTR.y.toFixed(1)} ${pBR.x.toFixed(1)},${pBR.y.toFixed(1)} ${pBL.x.toFixed(1)},${pBL.y.toFixed(1)}`;
+
+    if (poly) poly.setAttribute("points", ptsStr);
+    if (maskPoly) maskPoly.setAttribute("points", ptsStr);
+
+    const d1 = document.getElementById("svg-diag-1");
+    const d2 = document.getElementById("svg-diag-2");
+    if (d1) {
+      d1.setAttribute("x1", pTL.x); d1.setAttribute("y1", pTL.y);
+      d1.setAttribute("x2", pBR.x); d1.setAttribute("y2", pBR.y);
+    }
+    if (d2) {
+      d2.setAttribute("x1", pTR.x); d2.setAttribute("y1", pTR.y);
+      d2.setAttribute("x2", pBL.x); d2.setAttribute("y2", pBL.y);
+    }
+
+    const panArea = document.getElementById("anchor-pan-area");
+    if (panArea) {
+      const minX = Math.min(pTL.x, pTR.x, pBR.x, pBL.x);
+      const maxX = Math.max(pTL.x, pTR.x, pBR.x, pBL.x);
+      const minY = Math.min(pTL.y, pTR.y, pBR.y, pBL.y);
+      const maxY = Math.max(pTL.y, pTR.y, pBR.y, pBL.y);
+      const padW = (maxX - minX) * 0.22;
+      const padH = (maxY - minY) * 0.22;
+
+      panArea.style.left = (minX + padW) + "px";
+      panArea.style.top = (minY + padH) + "px";
+      panArea.style.width = Math.max(40, (maxX - minX - padW * 2)) + "px";
+      panArea.style.height = Math.max(40, (maxY - minY - padH * 2)) + "px";
+    }
+  }
+
+  function getRealVideoCornerCoordinates() {
+    const video = document.getElementById("camera-stream");
+    const layer = document.getElementById("corner-overlay-layer");
+    if (!video || !layer) return null;
+
+    const vw = video.videoWidth || 1280;
+    const vh = video.videoHeight || 720;
+    const bw = layer.clientWidth || 360;
+    const bh = layer.clientHeight || 640;
+
+    const scale = Math.max(bw / vw, bh / vh);
+    const renderedW = vw * scale;
+    const renderedH = vh * scale;
+    const offsetX = (bw - renderedW) / 2;
+    const offsetY = (bh - renderedH) / 2;
+
+    const toVideo = (pt) => {
+      const pxX = pt.x * bw;
+      const pxY = pt.y * bh;
+      const vidX = Math.round(Math.max(0, Math.min(vw, (pxX - offsetX) / scale)));
+      const vidY = Math.round(Math.max(0, Math.min(vh, (pxY - offsetY) / scale)));
+      return [vidX, vidY];
+    };
+
+    const { tl, tr, br, bl } = state.cameraAnchors;
+    return [
+      toVideo(tl),
+      toVideo(tr),
+      toVideo(br),
+      toVideo(bl)
+    ];
+  }
+
+  // Nắn phẳng phối cảnh ảnh theo 4 góc tứ giác thành hình chữ nhật A4 chuẩn
+  function warpQuadrilateralCanvas(srcCanvas, corners, dstW = 1200, dstH = 1697) {
+    if (!corners || corners.length !== 4) return srcCanvas;
+    const [p0, p1, p2, p3] = corners; // TL, TR, BR, BL
+
+    const outCanvas = document.createElement("canvas");
+    outCanvas.width = dstW;
+    outCanvas.height = dstH;
+    const ctx = outCanvas.getContext("2d", { willReadFrequently: true });
+
+    function drawAffineTriangle(s0, s1, s2, d0, d1, d2) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(d0[0], d0[1]);
+      ctx.lineTo(d1[0], d1[1]);
+      ctx.lineTo(d2[0], d2[1]);
+      ctx.closePath();
+      ctx.clip();
+
+      const denom = (s0[0] * (s1[1] - s2[1]) + s1[0] * (s2[1] - s0[1]) + s2[0] * (s0[1] - s1[1]));
+      if (Math.abs(denom) < 1e-6) {
+        ctx.restore();
+        return;
+      }
+
+      const m11 = -(s0[1] * (d1[0] - d2[0]) + s1[1] * (d2[0] - d0[0]) + s2[1] * (d0[0] - d1[0])) / denom;
+      const m12 = (s0[1] * (d1[1] - d2[1]) + s1[1] * (d2[1] - d0[1]) + s2[1] * (d0[1] - d1[1])) / denom;
+      const m21 = (s0[0] * (d1[0] - d2[0]) + s1[0] * (d2[0] - d0[0]) + s2[0] * (d0[0] - d1[0])) / denom;
+      const m22 = -(s0[0] * (d1[1] - d2[1]) + s1[0] * (d2[1] - d0[1]) + s2[0] * (d0[1] - d1[1])) / denom;
+      const dx = (s0[0] * (s1[1] * d2[0] - s2[1] * d1[0]) + s0[1] * (s2[0] * d1[0] - s1[0] * d2[0]) + (s1[0] * s2[1] - s2[0] * s1[1]) * d0[0]) / denom;
+      const dy = (s0[0] * (s1[1] * d2[1] - s2[1] * d1[1]) + s0[1] * (s2[0] * d1[1] - s1[0] * d2[1]) + (s1[0] * s2[1] - s2[0] * s1[1]) * d0[1]) / denom;
+
+      ctx.transform(m11, m12, m21, m22, dx, dy);
+      ctx.drawImage(srcCanvas, 0, 0);
+      ctx.restore();
+    }
+
+    // Tam giác 1: TL - TR - BL
+    drawAffineTriangle(p0, p1, p3, [0, 0], [dstW, 0], [0, dstH]);
+    // Tam giác 2: TR - BR - BL
+    drawAffineTriangle(p1, p2, p3, [dstW, 0], [dstW, dstH], [0, dstH]);
+
+    return outCanvas;
+  }
+
   // Chụp khung hình từ camera và chấm bài
   async function captureAndGradeFromCamera() {
     const video = document.getElementById("camera-stream");
@@ -263,9 +665,26 @@
     const templateId = document.getElementById("cam-template-select").value || "thpt_2025";
     const useGemini = document.getElementById("chk-auto-gemini-cam").checked;
 
+    const manualCorners = getRealVideoCornerCoordinates();
+    let finalBase64 = base64Data;
+
+    // Nắn thẳng phối cảnh dựa trên 4 điểm neo góc của thầy
+    if (manualCorners && manualCorners.length === 4) {
+      try {
+        const warped = warpQuadrilateralCanvas(canvas, manualCorners, 1200, 1697);
+        if (warped) {
+          finalBase64 = warped.toDataURL("image/jpeg", 0.92);
+        }
+      } catch (warpErr) {
+        console.warn("[Warp Canvas Error]:", warpErr);
+      }
+    }
+
     showShutterFlash();
     await processGradingRequest({
-      base64Data: base64Data,
+      base64Data: finalBase64,
+      rawBase64: base64Data,
+      manualCorners: manualCorners,
       templateId: templateId,
       useGemini: useGemini,
       sourceName: "Ảnh_Camera_" + new Date().toLocaleTimeString("vi-VN"),
@@ -293,13 +712,13 @@
   // =========================================================================
   // 5. LÕI GỬI YÊU CẦU CHẤM BÀI (HỖ TRỢ BACKEND + GEMINI AI DIRECT)
   // =========================================================================
-  async function processGradingRequest({ base64Data, templateId, useGemini, sourceName, isCameraCapture }) {
+  async function processGradingRequest({ base64Data, rawBase64, manualCorners, templateId, useGemini, sourceName, isCameraCapture }) {
     const activeKey = state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_101;
     const scoringCfg = activeKey.scoring_config || DEFAULT_STRUCTURE;
 
     let gradeResult = null;
     let gradedImage = null;
-    let originalImage = base64Data;
+    let originalImage = rawBase64 || base64Data;
 
     const payload = {
       image_base64: base64Data,
@@ -309,7 +728,8 @@
       use_gemini_ai: Boolean(useGemini && state.geminiKey),
       gemini_api_key: state.geminiKey,
       gemini_model: state.geminiModel,
-      scoring_config: scoringCfg
+      scoring_config: scoringCfg,
+      manual_corners: manualCorners
     };
 
     // Ưu tiên 1: Gửi tới Backend FastAPI (nếu đang chạy localhost hoặc LAN Wi-Fi PC)
@@ -422,11 +842,13 @@
     const apiKey = state.geminiKey;
     const modelCandidates = [
       state.geminiModel,
-      "gemini-flash-latest",
-      "gemini-2.5-flash-lite",
+      "gemini-1.5-flash",
       "gemini-2.0-flash",
-      "gemini-2.5-pro"
-    ];
+      "gemini-1.5-flash-latest",
+      "gemini-1.5-pro",
+      "gemini-2.0-flash-lite",
+      "gemini-flash-latest"
+    ].filter(Boolean);
 
     const p1Count = scoringCfg.enable_part1 ? scoringCfg.part1_count : 0;
     const p2Count = scoringCfg.enable_part2 ? scoringCfg.part2_count : 0;
@@ -1092,7 +1514,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
   async function testGeminiApiKey() {
     const key = document.getElementById("cfg-gemini-key").value.trim();
-    const model = document.getElementById("cfg-gemini-model").value;
+    let model = document.getElementById("cfg-gemini-model").value;
     const msgBox = document.getElementById("gemini-test-msg");
     if (!key) {
       alert("Vui lòng dán khóa Gemini API Key vào ô trên!");
@@ -1102,29 +1524,90 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     if (msgBox) {
       msgBox.className = "msg-box";
       msgBox.style.display = "block";
-      msgBox.textContent = "⏳ Đang kiểm tra kết nối tới máy chủ Google Gemini...";
+      msgBox.textContent = "⏳ Đang kiểm tra kết nối và tự động dò tìm mô hình Google Gemini khả dụng...";
     }
 
     try {
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: "OK" }] }],
-          generationConfig: { maxOutputTokens: 5 }
-        })
-      });
+      // 1. Thử lấy danh sách models được cấp quyền cho API Key này
+      let availModels = [];
+      try {
+        const listResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+        if (listResp.ok) {
+          const listData = await listResp.json();
+          availModels = (listData.models || [])
+            .filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+            .map(m => m.name.replace(/^models\//, ''))
+            .filter(n => n.toLowerCase().startsWith("gemini") && !n.includes("embedding"));
+        }
+      } catch (e) {
+        console.warn("Lỗi đọc list models:", e);
+      }
 
-      if (resp.ok) {
+      // 2. Danh sách các model ứng viên để kiểm tra
+      const testCandidates = [
+        model,
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro",
+        "gemini-2.0-flash-lite",
+        "gemini-flash-latest",
+        ...availModels
+      ].filter((v, i, a) => v && a.indexOf(v) === i);
+
+      let workingModel = null;
+      let lastErrMsg = "";
+
+      for (const m of testCandidates) {
+        try {
+          const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: "ping" }] }],
+              generationConfig: { maxOutputTokens: 5 }
+            })
+          });
+
+          if (resp.ok) {
+            workingModel = m;
+            break;
+          } else {
+            const errData = await resp.json().catch(() => ({}));
+            lastErrMsg = errData?.error?.message || `Lỗi HTTP ${resp.status}`;
+          }
+        } catch (err) {
+          lastErrMsg = err.message;
+        }
+      }
+
+      if (workingModel) {
         msgBox.className = "msg-box success";
-        msgBox.textContent = `✅ Kết nối thành công với mô hình [${model}]!`;
+        msgBox.textContent = `✅ Kết nối thành công! Mô hình đang hoạt động: [${workingModel}]. Đã tự động kích hoạt.`;
         state.geminiKey = key;
-        state.geminiModel = model;
+        state.geminiModel = workingModel;
+
+        const sel = document.getElementById("cfg-gemini-model");
+        if (sel) {
+          let found = false;
+          for (let i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === workingModel) {
+              sel.selectedIndex = i;
+              found = true;
+              break;
+            }
+          }
+          if (!found) {
+            const opt = document.createElement("option");
+            opt.value = workingModel;
+            opt.textContent = `${workingModel} (Tự nhận diện)`;
+            sel.appendChild(opt);
+            sel.value = workingModel;
+          }
+        }
         persistState();
       } else {
-        const errData = await resp.json();
         msgBox.className = "msg-box error";
-        msgBox.textContent = `❌ Lỗi ${resp.status}: ${errData?.error?.message || "Không thể kết nối mô hình này."}`;
+        msgBox.textContent = `❌ Lỗi kết nối Google: ${lastErrMsg}`;
       }
     } catch (e) {
       msgBox.className = "msg-box error";
@@ -1389,15 +1872,621 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
       document.getElementById("inp-st-name").value = "";
     });
 
-    // Settings tab controls
-    document.getElementById("btn-test-gemini-key")?.addEventListener("click", testGeminiApiKey);
-    document.getElementById("btn-save-gemini-key")?.addEventListener("click", () => {
-      state.geminiKey = document.getElementById("cfg-gemini-key").value.trim();
-      state.geminiModel = document.getElementById("cfg-gemini-model").value;
+  // =========================================================================
+  // 12. HỆ THỐNG XÁC THỰC FIREBASE & QUẢN TRỊ ADMIN (PHÊ DUYỆT TÀI KHOẢN)
+  // =========================================================================
+  function syncUserAuthUI() {
+    const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
+    state.currentUser = user;
+
+    const topbarName = document.getElementById("topbar-user-name");
+    const roleBadge = document.getElementById("badge-my-role");
+    const boxLoggedIn = document.getElementById("box-user-logged-in");
+    const boxNotLogged = document.getElementById("box-user-not-logged");
+    const btnAdminPanel = document.getElementById("btn-open-admin-panel");
+    const pendingModal = document.getElementById("pending-approval-modal");
+
+    if (user) {
+      if (topbarName) topbarName.textContent = user.displayName || user.email.split("@")[0];
+      if (boxLoggedIn) boxLoggedIn.style.display = "block";
+      if (boxNotLogged) boxNotLogged.style.display = "none";
+
+      document.getElementById("my-display-name").textContent = user.displayName || "Giáo Viên";
+      document.getElementById("my-school-name").textContent = user.school || "THPT Chi Lăng, Lạng Sơn";
+      document.getElementById("my-email-address").textContent = user.email;
+
+      const initial = (user.displayName || "GV").split(" ").map(w => w[0]).join("").slice(-2).toUpperCase();
+      document.getElementById("avatar-user-initial").textContent = initial || "GV";
+
+      if (roleBadge) {
+        roleBadge.textContent = user.role === "admin" ? "🛡️ QUẢN TRỊ VIÊN" : "👨‍🏫 GIÁO VIÊN";
+        roleBadge.className = `badge-role ${user.role === "admin" ? "admin" : "teacher"}`;
+      }
+
+      const statusEl = document.getElementById("my-account-status");
+      if (statusEl) {
+        if (user.status === "approved") {
+          statusEl.textContent = "✅ Đã Kích Hoạt";
+          statusEl.className = "status-badge-ok";
+          if (pendingModal) pendingModal.style.display = "none";
+        } else if (user.status === "pending") {
+          statusEl.textContent = "⏳ Chờ Admin Phê Duyệt";
+          statusEl.className = "status-badge-pending";
+          // Hiển thị modal chờ duyệt
+          document.getElementById("pending-user-name").textContent = user.displayName || user.email;
+          if (pendingModal) pendingModal.style.display = "flex";
+        } else if (user.status === "blocked") {
+          statusEl.textContent = "❌ Đang Bị Tạm Khóa";
+          statusEl.className = "status-badge-blocked";
+        }
+      }
+
+      // Chỉ Admin mới thấy nút Mở Bảng Quản Trị
+      if (btnAdminPanel) {
+        btnAdminPanel.style.display = user.role === "admin" ? "block" : "none";
+      }
+
+      // Nạp API Key riêng biệt của user này vào hệ thống
+      if (user.geminiApiKey) {
+        state.geminiKey = user.geminiApiKey;
+        document.getElementById("cfg-gemini-key").value = user.geminiApiKey;
+      }
+      if (user.geminiModel) {
+        state.geminiModel = user.geminiModel;
+        document.getElementById("cfg-gemini-model").value = user.geminiModel;
+      }
+    } else {
+      if (topbarName) topbarName.textContent = "Đăng Nhập";
+      if (boxLoggedIn) boxLoggedIn.style.display = "none";
+      if (boxNotLogged) boxNotLogged.style.display = "block";
+      if (roleBadge) {
+        roleBadge.textContent = "CHƯA ĐĂNG NHẬP";
+        roleBadge.className = "badge-role";
+      }
+      if (btnAdminPanel) btnAdminPanel.style.display = "none";
+      if (pendingModal) pendingModal.style.display = "none";
+    }
+  }
+
+  function openAuthModal(isRegister = false) {
+    const modal = document.getElementById("auth-modal");
+    if (!modal) return;
+    const tabLogin = document.getElementById("tab-btn-show-login");
+    const tabReg = document.getElementById("tab-btn-show-register");
+    const formLogin = document.getElementById("form-login");
+    const formReg = document.getElementById("form-register");
+    const title = document.getElementById("auth-modal-title");
+    const alertMsg = document.getElementById("auth-alert-msg");
+    if (alertMsg) alertMsg.style.display = "none";
+
+    if (isRegister) {
+      tabLogin.classList.remove("active");
+      tabReg.classList.add("active");
+      formLogin.style.display = "none";
+      formReg.style.display = "block";
+      title.textContent = "📝 Đăng Ký Tài Khoản Giáo Viên";
+    } else {
+      tabLogin.classList.add("active");
+      tabReg.classList.remove("active");
+      formLogin.style.display = "block";
+      formReg.style.display = "none";
+      title.textContent = "🔐 Đăng Nhập Giáo Viên";
+    }
+    modal.style.display = "flex";
+  }
+
+  function closeAuthModal() {
+    const modal = document.getElementById("auth-modal");
+    if (modal) modal.style.display = "none";
+  }
+
+  // Xử lý nộp Form Đăng nhập
+  async function handleLoginSubmit(e) {
+    e.preventDefault();
+    const email = document.getElementById("inp-login-email").value.trim();
+    const pass = document.getElementById("inp-login-password").value;
+    const alertMsg = document.getElementById("auth-alert-msg");
+
+    try {
+      alertMsg.style.display = "block";
+      alertMsg.className = "msg-box";
+      alertMsg.textContent = "⏳ Đang xác thực thông tin tài khoản...";
+
+      const user = await window.SmartAuth.loginUser(email, pass);
+      alertMsg.className = "msg-box success";
+      alertMsg.textContent = "✅ Đăng nhập thành công!";
+      setTimeout(() => {
+        closeAuthModal();
+        syncUserAuthUI();
+      }, 700);
+    } catch (err) {
+      alertMsg.className = "msg-box error";
+      alertMsg.textContent = `❌ Lỗi: ${err.message}`;
+    }
+  }
+
+  // Xử lý nộp Form Đăng ký
+  async function handleRegisterSubmit(e) {
+    e.preventDefault();
+    const name = document.getElementById("inp-reg-name").value.trim();
+    const school = document.getElementById("inp-reg-school").value.trim();
+    const email = document.getElementById("inp-reg-email").value.trim();
+    const pass = document.getElementById("inp-reg-password").value;
+    const phone = document.getElementById("inp-reg-phone").value.trim();
+    const adminSecret = document.getElementById("inp-reg-admin-code").value.trim();
+    const alertMsg = document.getElementById("auth-alert-msg");
+
+    try {
+      alertMsg.style.display = "block";
+      alertMsg.className = "msg-box";
+      alertMsg.textContent = "⏳ Đang tạo tài khoản giáo viên...";
+
+      const newProfile = await window.SmartAuth.registerUser({
+        email,
+        password: pass,
+        displayName: name,
+        school,
+        phone,
+        adminSecret
+      });
+
+      alertMsg.className = "msg-box success";
+      if (newProfile.status === "approved") {
+        alertMsg.textContent = "🎉 Đăng ký tài khoản Admin thành công! Đang đăng nhập...";
+        await window.SmartAuth.loginUser(email, pass);
+        setTimeout(() => {
+          closeAuthModal();
+          syncUserAuthUI();
+        }, 1000);
+      } else {
+        alertMsg.textContent = "✅ Đăng ký thành công! Tài khoản của thầy/cô đã gửi tới Thầy Nguyễn Văn Hoàng (Admin) phê duyệt.";
+        await window.SmartAuth.loginUser(email, pass);
+        setTimeout(() => {
+          closeAuthModal();
+          syncUserAuthUI();
+        }, 1500);
+      }
+    } catch (err) {
+      alertMsg.className = "msg-box error";
+      alertMsg.textContent = `❌ Lỗi đăng ký: ${err.message}`;
+    }
+  }
+
+  // Đăng xuất
+  async function handleLogout() {
+    if (confirm("Thầy/cô có chắc muốn đăng xuất khỏi tài khoản này?")) {
+      await window.SmartAuth.logoutUser();
+      syncUserAuthUI();
+      alert("Đã đăng xuất thành công!");
+    }
+  }
+
+  // =========================================================================
+  // 13. QUẢN TRỊ ADMIN: DUYỆT TÀI KHOẢN THÀNH VIÊN
+  // =========================================================================
+  async function openAdminPanelModal() {
+    const modal = document.getElementById("admin-panel-modal");
+    if (!modal) return;
+    modal.style.display = "flex";
+    await refreshAdminUsersList();
+  }
+
+  async function refreshAdminUsersList() {
+    try {
+      const users = await window.SmartAuth.adminFetchAllUsers();
+      const pendingUsers = users.filter((u) => u.status === "pending");
+      const activeUsers = users.filter((u) => u.status === "approved");
+
+      document.getElementById("admin-stat-total").textContent = users.length;
+      document.getElementById("admin-stat-pending").textContent = pendingUsers.length;
+      document.getElementById("admin-stat-active").textContent = activeUsers.length;
+      document.getElementById("count-pending-users").textContent = pendingUsers.length;
+
+      // 1. Render danh sách tài khoản chờ duyệt
+      const pendingBox = document.getElementById("admin-pending-users-list");
+      if (pendingUsers.length === 0) {
+        pendingBox.innerHTML = `<div style="padding:12px;text-align:center;color:#94a3b8;font-size:12px;">🎉 Hiện không có tài khoản nào đang chờ duyệt.</div>`;
+      } else {
+        pendingBox.innerHTML = pendingUsers.map((u) => `
+          <div class="admin-user-card pending">
+            <div class="admin-user-header">
+              <div>
+                <span class="admin-user-name">${u.displayName || "Giáo Viên"}</span>
+                <span class="badge-role teacher" style="margin-left:4px;">Chờ Duyệt</span>
+              </div>
+              <span style="font-size:11px;color:#94a3b8;">${u.createdAt ? new Date(u.createdAt).toLocaleDateString("vi-VN") : ""}</span>
+            </div>
+            <div class="admin-user-sub">
+              📧 ${u.email} | 🏫 ${u.school || "Chưa rõ trường"} ${u.phone ? `| 📞 ${u.phone}` : ""}
+            </div>
+            <div class="admin-action-btns">
+              <button class="btn btn-sm btn-success btn-approve-user" data-uid="${u.uid}">
+                ✅ Phê Duyệt Kích Hoạt
+              </button>
+              <button class="btn btn-sm btn-danger btn-delete-user" data-uid="${u.uid}">
+                ✕ Từ Chối / Xóa
+              </button>
+            </div>
+          </div>
+        `).join("");
+
+        pendingBox.querySelectorAll(".btn-approve-user").forEach((b) => {
+          b.addEventListener("click", async () => {
+            const uid = b.dataset.uid;
+            b.disabled = true;
+            b.textContent = "⏳ Đang duyệt...";
+            await window.SmartAuth.adminApproveUser(uid);
+            alert("Đã phê duyệt và kích hoạt tài khoản thành công!");
+            await refreshAdminUsersList();
+          });
+        });
+
+        pendingBox.querySelectorAll(".btn-delete-user").forEach((b) => {
+          b.addEventListener("click", async () => {
+            if (confirm("Thầy có chắc muốn từ chối và xóa tài khoản này?")) {
+              const uid = b.dataset.uid;
+              await window.SmartAuth.adminDeleteUser(uid);
+              await refreshAdminUsersList();
+            }
+          });
+        });
+      }
+
+      // 2. Render danh sách tất cả thành viên
+      const allBox = document.getElementById("admin-all-users-list");
+      allBox.innerHTML = users.map((u) => {
+        const isApproved = u.status === "approved";
+        const isBlocked = u.status === "blocked";
+        const statusLabel = isApproved ? "✅ Hoạt động" : (isBlocked ? "❌ Bị khóa" : "⏳ Chờ duyệt");
+        return `
+          <div class="admin-user-card ${u.status || 'active'}">
+            <div class="admin-user-header">
+              <div>
+                <strong class="admin-user-name">${u.displayName || u.email}</strong>
+                <span class="badge-role ${u.role === 'admin' ? 'admin' : 'teacher'}" style="margin-left:4px;">${u.role === 'admin' ? 'ADMIN' : 'GIÁO VIÊN'}</span>
+              </div>
+              <span style="font-size:11px;font-weight:700;color:${isApproved ? '#16a34a' : (isBlocked ? '#dc2626' : '#d97706')}">${statusLabel}</span>
+            </div>
+            <div class="admin-user-sub">
+              📧 ${u.email} | 🏫 ${u.school || "THPT Chi Lăng"}
+              ${u.geminiApiKey ? ' | 🔑 Đã có API Key riêng' : ' | ⚠️ Chưa cài API Key'}
+            </div>
+            <div class="admin-action-btns">
+              ${u.role !== 'admin' ? `
+                ${isBlocked ? `
+                  <button class="btn btn-sm btn-outline btn-toggle-block" data-uid="${u.uid}" data-action="unblock">🔓 Mở Khóa</button>
+                ` : `
+                  <button class="btn btn-sm btn-outline btn-toggle-block" data-uid="${u.uid}" data-action="block">🔒 Khóa Tạm Thời</button>
+                `}
+                <button class="btn btn-sm btn-danger btn-delete-user" data-uid="${u.uid}">🗑️ Xóa</button>
+              ` : '<span style="font-size:11px;color:#94a3b8;font-style:italic;">(Tài khoản quản trị viên chính)</span>'}
+            </div>
+          </div>
+        `;
+      }).join("");
+
+      allBox.querySelectorAll(".btn-toggle-block").forEach((b) => {
+        b.addEventListener("click", async () => {
+          const uid = b.dataset.uid;
+          const action = b.dataset.action;
+          if (action === "block") {
+            await window.SmartAuth.adminBlockUser(uid);
+          } else {
+            await window.SmartAuth.adminApproveUser(uid);
+          }
+          await refreshAdminUsersList();
+        });
+      });
+
+      allBox.querySelectorAll(".btn-delete-user").forEach((b) => {
+        b.addEventListener("click", async () => {
+          if (confirm("Thầy có chắc muốn xóa vĩnh viễn tài khoản này?")) {
+            const uid = b.dataset.uid;
+            await window.SmartAuth.adminDeleteUser(uid);
+            await refreshAdminUsersList();
+          }
+        });
+      });
+    } catch (err) {
+      alert("Lỗi tải danh sách người dùng: " + err.message);
+    }
+  }
+
+  // =========================================================================
+  // 14. GẮN SỰ KIỆN NÚT BẤM TOÀN HỆ THỐNG (EVENT LISTENERS)
+  // =========================================================================
+  function bindAllEvents() {
+    // Header & PWA
+    document.getElementById("btn-quick-pwa-install")?.addEventListener("click", triggerPwaInstall);
+    document.getElementById("btn-do-install-pwa")?.addEventListener("click", triggerPwaInstall);
+    document.getElementById("btn-dismiss-install")?.addEventListener("click", () => {
+      document.getElementById("pwa-install-banner").style.display = "none";
+      sessionStorage.setItem("pwa_banner_dismissed", "1");
+    });
+
+    // Profile button on topbar
+    document.getElementById("btn-user-profile")?.addEventListener("click", () => {
+      const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
+      if (user) {
+        switchTab("tab-settings");
+        document.getElementById("card-user-account-info")?.scrollIntoView({ behavior: "smooth" });
+      } else {
+        openAuthModal(false);
+      }
+    });
+
+    // Auth Modal events
+    document.getElementById("btn-close-auth-modal")?.addEventListener("click", closeAuthModal);
+    document.getElementById("btn-trigger-login-modal")?.addEventListener("click", () => openAuthModal(false));
+    document.getElementById("tab-btn-show-login")?.addEventListener("click", () => openAuthModal(false));
+    document.getElementById("tab-btn-show-register")?.addEventListener("click", () => openAuthModal(true));
+    document.getElementById("form-login")?.addEventListener("submit", handleLoginSubmit);
+    document.getElementById("form-register")?.addEventListener("submit", handleRegisterSubmit);
+    document.getElementById("btn-action-logout")?.addEventListener("click", handleLogout);
+
+    // Pending modal
+    document.getElementById("btn-logout-from-pending")?.addEventListener("click", handleLogout);
+    document.getElementById("btn-recheck-approval")?.addEventListener("click", () => {
+      syncUserAuthUI();
+      const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
+      if (user && user.status === "approved") {
+        alert("🎉 Chúc mừng thầy/cô! Tài khoản đã được Thầy Nguyễn Văn Hoàng phê duyệt. Thầy/cô có thể bắt đầu sử dụng app!");
+      } else {
+        alert("⏳ Tài khoản của thầy/cô vẫn đang ở trạng thái chờ Admin duyệt.");
+      }
+    });
+
+    // Admin panel modal
+    document.getElementById("btn-open-admin-panel")?.addEventListener("click", openAdminPanelModal);
+    document.getElementById("btn-close-admin-panel")?.addEventListener("click", () => {
+      document.getElementById("admin-panel-modal").style.display = "none";
+    });
+
+    // Firebase Config modal
+    document.getElementById("btn-open-firebase-config")?.addEventListener("click", () => {
+      const cfg = window.SmartAuth.getFirebaseConfig();
+      document.getElementById("fb-cfg-apikey").value = cfg.apiKey || "";
+      document.getElementById("fb-cfg-projectid").value = cfg.projectId || "";
+      document.getElementById("fb-cfg-authdomain").value = cfg.authDomain || "";
+      document.getElementById("fb-cfg-appid").value = cfg.appId || "";
+      document.getElementById("firebase-config-modal").style.display = "flex";
+    });
+    document.getElementById("btn-close-fb-config")?.addEventListener("click", () => {
+      document.getElementById("firebase-config-modal").style.display = "none";
+    });
+    document.getElementById("btn-save-fb-config")?.addEventListener("click", () => {
+      const cfg = {
+        apiKey: document.getElementById("fb-cfg-apikey").value.trim(),
+        projectId: document.getElementById("fb-cfg-projectid").value.trim(),
+        authDomain: document.getElementById("fb-cfg-authdomain").value.trim(),
+        appId: document.getElementById("fb-cfg-appid").value.trim(),
+        storageBucket: `${document.getElementById("fb-cfg-projectid").value.trim()}.appspot.com`,
+        messagingSenderId: ""
+      };
+      window.SmartAuth.saveFirebaseConfig(cfg);
+      window.SmartAuth.initFirebase();
+      document.getElementById("firebase-config-modal").style.display = "none";
+      alert("Đã lưu cấu hình Firebase! Hệ thống sẽ kết nối với dự án Firebase Cloud của thầy.");
+    });
+    document.getElementById("btn-reset-fb-mock")?.addEventListener("click", () => {
+      window.SmartAuth.saveFirebaseConfig({ apiKey: "", projectId: "" });
+      window.SmartAuth.initFirebase();
+      document.getElementById("firebase-config-modal").style.display = "none";
+      alert("Đã chuyển về chế độ Local Demo để chạy thử nghiệm!");
+    });
+
+    // Save individual Gemini API Key for current user
+    document.getElementById("btn-save-gemini-key")?.addEventListener("click", async () => {
+      const key = document.getElementById("cfg-gemini-key").value.trim();
+      const model = document.getElementById("cfg-gemini-model").value;
+      state.geminiKey = key;
+      state.geminiModel = model;
       state.autoGemini = document.getElementById("cfg-auto-gemini-toggle").checked;
       persistState();
-      alert("Đã lưu khóa Google Gemini API Key thành công!");
+
+      if (window.SmartAuth && window.SmartAuth.getCurrentUser()) {
+        try {
+          await window.SmartAuth.updateMyGeminiKey(key, model);
+          alert(`Đã lưu khóa Google Gemini API Key riêng biệt cho tài khoản [${state.currentUser.displayName || state.currentUser.email}] thành công!`);
+        } catch (e) {
+          alert(`Đã lưu cục bộ: ${e.message}`);
+        }
+      } else {
+        alert("Đã lưu khóa Google Gemini API Key thành công!");
+      }
     });
+
+    // Session Modal
+    document.getElementById("btn-topbar-menu")?.addEventListener("click", () => {
+      document.getElementById("quick-session-modal").style.display = "flex";
+    });
+    document.getElementById("btn-close-session-modal")?.addEventListener("click", () => {
+      document.getElementById("quick-session-modal").style.display = "none";
+    });
+    document.getElementById("btn-modal-new-session")?.addEventListener("click", () => {
+      const name = prompt("Nhập tên phiên chấm mới:", "Phiên chấm " + new Date().toLocaleDateString("vi-VN"));
+      if (name) {
+        state.sessionName = name.trim();
+        state.batchItems = [];
+        state.submissions = [];
+        persistState();
+        document.getElementById("hdr-session-name").textContent = `Phiên: ${state.sessionName}`;
+        document.getElementById("quick-session-modal").style.display = "none";
+        renderBatchCards();
+        renderGradebook();
+      }
+    });
+    document.getElementById("btn-modal-save-session")?.addEventListener("click", () => {
+      exportCurrentSessionFile();
+      document.getElementById("quick-session-modal").style.display = "none";
+    });
+    document.getElementById("file-import-omr")?.addEventListener("change", (e) => {
+      if (e.target.files?.[0]) {
+        importSessionFile(e.target.files[0]);
+        document.getElementById("quick-session-modal").style.display = "none";
+      }
+    });
+    document.getElementById("btn-modal-sync-pc")?.addEventListener("click", () => {
+      document.getElementById("quick-session-modal").style.display = "none";
+      switchTab("tab-settings");
+      document.getElementById("inp-pc-server-url")?.focus();
+    });
+
+    // Camera tab controls
+    document.getElementById("btn-shutter-grade")?.addEventListener("click", () => {
+      const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
+      if (user && user.status === "pending") {
+        alert("Tài khoản của thầy/cô đang chờ Thầy Nguyễn Văn Hoàng phê duyệt. Vui lòng liên hệ Admin để được kích hoạt chức năng chấm bài!");
+        return;
+      }
+      captureAndGradeFromCamera();
+    });
+    document.getElementById("btn-toggle-camera-facing")?.addEventListener("click", toggleCameraFacing);
+    document.getElementById("btn-toggle-torch")?.addEventListener("click", toggleCameraTorch);
+    document.getElementById("camera-single-file-input")?.addEventListener("change", async (e) => {
+      if (e.target.files?.[0]) {
+        const b64 = await readFileAsBase64(e.target.files[0]);
+        await processGradingRequest({
+          base64Data: b64,
+          templateId: document.getElementById("cam-template-select").value || "thpt_2025",
+          useGemini: document.getElementById("chk-auto-gemini-cam").checked,
+          sourceName: e.target.files[0].name,
+          isCameraCapture: true
+        });
+      }
+    });
+
+    // Camera result sheet controls
+    document.getElementById("btn-view-graded-cam")?.addEventListener("click", () => {
+      if (state.currentViewerItem) openImageViewer(state.currentViewerItem);
+    });
+    document.getElementById("btn-dismiss-continue-cam")?.addEventListener("click", () => {
+      document.getElementById("camera-result-sheet").style.display = "none";
+    });
+    document.getElementById("btn-toggle-result-sheet")?.addEventListener("click", () => {
+      document.getElementById("camera-result-sheet").style.display = "none";
+    });
+
+    // Batch tab controls
+    document.getElementById("btn-trigger-batch-upload")?.addEventListener("click", () => {
+      const user = window.SmartAuth ? window.SmartAuth.getCurrentUser() : null;
+      if (user && user.status === "pending") {
+        alert("Tài khoản của thầy/cô đang chờ Thầy Nguyễn Văn Hoàng phê duyệt để chấm bài!");
+        return;
+      }
+      document.getElementById("batch-files-input").click();
+    });
+    document.getElementById("batch-files-input")?.addEventListener("change", (e) => {
+      handleBatchFiles(Array.from(e.target.files || []));
+    });
+    document.getElementById("btn-clear-batch")?.addEventListener("click", () => {
+      if (confirm("Thầy có chắc chắn muốn xóa toàn bộ danh sách bài trong phiên này?")) {
+        state.batchItems = [];
+        persistState();
+        renderBatchCards();
+      }
+    });
+    document.getElementById("btn-export-excel-batch")?.addEventListener("click", exportGradebookExcel);
+    document.getElementById("btn-generate-sim-batch")?.addEventListener("click", async () => {
+      const progCard = document.getElementById("batch-progress-card");
+      if (progCard) progCard.style.display = "block";
+      for (let i = 0; i < 8; i++) {
+        const randSt = state.students[i % state.students.length] || DEFAULT_STUDENTS[0];
+        const res = mockOfflineGrade("", "thpt_2025", DEFAULT_STRUCTURE);
+        res.sbd = randSt.sbd;
+        res.student_name = randSt.full_name;
+        res.student_class = randSt.class_name;
+        state.batchItems.unshift({
+          id: res.id,
+          name: `Phiếu_Mẫu_${i + 1}_SBD_${randSt.sbd}`,
+          result: res,
+          graded_bgr: null,
+          orig_bgr: null,
+          timestamp: new Date().toLocaleTimeString("vi-VN")
+        });
+      }
+      persistState();
+      renderBatchCards();
+      if (progCard) progCard.style.display = "none";
+    });
+
+    // Keys & Structure Tab
+    ["cfg-p1-enable", "cfg-p1-count", "cfg-p1-pts", "cfg-p2-enable", "cfg-p2-count", "cfg-p2-pts", "cfg-p3-enable", "cfg-p3-count", "cfg-p3-pts"].forEach((id) => {
+      document.getElementById(id)?.addEventListener("input", updateScoreSummaryBanner);
+    });
+
+    document.getElementById("btn-save-structure")?.addEventListener("click", () => {
+      const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_101;
+      curKey.scoring_config = {
+        enable_part1: document.getElementById("cfg-p1-enable").checked,
+        part1_count: parseInt(document.getElementById("cfg-p1-count").value, 10) || 24,
+        part1_points_each: parseFloat(document.getElementById("cfg-p1-pts").value) || 0.25,
+        enable_part2: document.getElementById("cfg-p2-enable").checked,
+        part2_count: parseInt(document.getElementById("cfg-p2-count").value, 10) || 4,
+        part2_max_points_each: parseFloat(document.getElementById("cfg-p2-pts").value) || 1.0,
+        enable_part3: document.getElementById("cfg-p3-enable").checked,
+        part3_count: parseInt(document.getElementById("cfg-p3-count").value, 10) || 6,
+        part3_points_each: parseFloat(document.getElementById("cfg-p3-pts").value) || 0.25
+      };
+      persistState();
+      renderKeysManager();
+      alert("Đã lưu cấu hình loại hình trắc nghiệm & số câu hỏi thành công!");
+    });
+
+    document.getElementById("key-made-select")?.addEventListener("change", (e) => {
+      state.activeMade = e.target.value;
+      renderKeysManager();
+    });
+
+    document.getElementById("btn-add-made-btn")?.addEventListener("click", () => {
+      const newMade = (document.getElementById("key-new-made-input").value || "").trim().padStart(3, "0");
+      if (newMade && !state.answerKeys[newMade]) {
+        state.answerKeys[newMade] = {
+          made: newMade,
+          exam_name: "Kỳ thi THPT Quốc Gia 2025",
+          scoring_config: { ...DEFAULT_STRUCTURE },
+          part1: { ...(state.answerKeys[state.activeMade]?.part1 || DEFAULT_KEY_101.part1) },
+          part2: { ...(state.answerKeys[state.activeMade]?.part2 || DEFAULT_KEY_101.part2) },
+          part3: { ...(state.answerKeys[state.activeMade]?.part3 || DEFAULT_KEY_101.part3) }
+        };
+        state.activeMade = newMade;
+        persistState();
+        renderKeysManager();
+        document.getElementById("key-new-made-input").value = "";
+      }
+    });
+
+    document.getElementById("btn-save-key-answers")?.addEventListener("click", () => {
+      persistState();
+      alert(`Đã lưu đáp án cho Mã đề [${state.activeMade}]!`);
+    });
+
+    document.getElementById("btn-apply-fast-answers")?.addEventListener("click", applyFastAnswerString);
+
+    // Students tab controls
+    document.getElementById("file-import-students-excel")?.addEventListener("change", (e) => {
+      if (e.target.files?.[0]) importStudentsExcelFile(e.target.files[0]);
+    });
+    document.getElementById("btn-download-st-template")?.addEventListener("click", exportStudentTemplateExcel);
+    document.getElementById("btn-export-gradebook-excel")?.addEventListener("click", exportGradebookExcel);
+    document.getElementById("search-student-inp")?.addEventListener("input", renderStudentsList);
+
+    document.getElementById("btn-add-single-student")?.addEventListener("click", () => {
+      const sbd = (document.getElementById("inp-st-sbd").value || "").trim().padStart(6, "0");
+      const name = (document.getElementById("inp-st-name").value || "").trim();
+      const cls = (document.getElementById("inp-st-class").value || "12A1").trim();
+      if (!name) {
+        alert("Vui lòng nhập họ và tên học sinh!");
+        return;
+      }
+      state.students.push({ sbd, full_name: name, class_name: cls, dob: "" });
+      persistState();
+      renderStudentsList();
+      document.getElementById("inp-st-name").value = "";
+    });
+
+    // Settings tab controls
+    document.getElementById("btn-test-gemini-key")?.addEventListener("click", testGeminiApiKey);
 
     document.getElementById("btn-toggle-key-eye")?.addEventListener("click", () => {
       const inp = document.getElementById("cfg-gemini-key");
@@ -1422,7 +2511,12 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
   // Khởi động ứng dụng
   window.addEventListener("DOMContentLoaded", () => {
+    if (window.SmartAuth) {
+      window.SmartAuth.initFirebase();
+      syncUserAuthUI();
+    }
     bindAllEvents();
+    initCameraCornerOverlay();
     updateNetworkStatus();
     document.getElementById("hdr-session-name").textContent = `Phiên: ${state.sessionName}`;
 

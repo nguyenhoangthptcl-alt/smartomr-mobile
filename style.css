@@ -254,110 +254,265 @@ body {
   object-fit: cover;
 }
 
-.viewfinder-overlay {
+/* ==========================================================================
+   THANH CÔNG CỤ CĂN CHỈNH KHỔ GIẤY A4 & 4 GÓC NEO TRÊN CAMERA
+   ========================================================================== */
+.a4-toolbar {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  z-index: 25;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 6px 12px;
+  border-radius: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+}
+
+.a4-toolbar-left,
+.a4-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.a4-btn {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 6px 11px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.12);
+  color: #f1f5f9;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.a4-btn:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+
+.a4-btn.active {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #ffffff;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.55);
+}
+
+.a4-btn-toggle.mode-editing {
+  background: #16a34a;
+  border-color: #22c55e;
+  color: #ffffff;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.6);
+  animation: a4-pulse 2s infinite ease-in-out;
+}
+
+.a4-btn-toggle.mode-locked {
+  background: #475569;
+  border-color: #64748b;
+  color: #cbd5e1;
+}
+
+@keyframes a4-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(34, 197, 94, 0.5); }
+  50% { box-shadow: 0 0 18px rgba(34, 197, 94, 0.9); }
+}
+
+.a4-size-control {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 16px;
+  padding: 2px 4px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.a4-btn-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.a4-btn-icon:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.08);
+}
+
+.a4-size-val {
+  font-size: 11px;
+  font-weight: 800;
+  color: #38bdf8;
+  min-width: 34px;
+  text-align: center;
+  user-select: none;
+}
+
+/* ==========================================================================
+   LỚP PHỦ CĂN CHỈNH 4 ĐIỂM NEO GÓC TƯƠNG TÁC LINH HOẠT
+   ========================================================================== */
+.corner-overlay-layer {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
   bottom: 0;
   pointer-events: none;
+  overflow: hidden;
+  z-index: 10;
+}
+
+.corner-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.corner-poly {
+  fill: rgba(34, 197, 94, 0.08);
+  stroke: #22c55e;
+  stroke-width: 2.5;
+  stroke-dasharray: 8 5;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.8));
+  transition: stroke 0.2s, stroke-width 0.2s;
+}
+
+.corner-poly.locked {
+  fill: rgba(56, 189, 248, 0.06);
+  stroke: #38bdf8;
+  stroke-dasharray: none;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 4px rgba(56, 189, 248, 0.6));
+}
+
+/* Điểm neo góc chạm kéo cảm ứng */
+.corner-anchor-handle {
+  position: absolute;
+  width: 54px;
+  height: 54px;
+  margin-left: -27px;
+  margin-top: -27px;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  cursor: grab;
+  touch-action: none;
+  pointer-events: auto;
+  z-index: 22;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
-.guide-box {
-  position: relative;
-  width: 86%;
-  max-width: 480px;
-  aspect-ratio: 1 / 1.414; /* Tỷ lệ khổ giấy A4 */
-  max-height: 80%;
-  border: 1.5px dashed rgba(255, 255, 255, 0.4);
-  border-radius: 12px;
-}
-
-/* 4 Góc định vị màu xanh lá phát sáng */
-.corner-target {
-  position: absolute;
+.anchor-core {
   width: 32px;
   height: 32px;
-  border-color: #22c55e;
-  border-style: solid;
-  border-width: 0;
+  border-radius: 50%;
+  background: #22c55e;
+  border: 3.5px solid #ffffff;
+  box-shadow: 0 0 14px rgba(34, 197, 94, 0.95), 0 3px 8px rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-.corner-target.tl {
-  top: -2px;
-  left: -2px;
-  border-top-width: 4px;
-  border-left-width: 4px;
-  border-top-left-radius: 8px;
+.anchor-tag {
+  font-size: 9.5px;
+  font-weight: 900;
+  color: #ffffff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  letter-spacing: -0.3px;
 }
 
-.corner-target.tr {
-  top: -2px;
-  right: -2px;
-  border-top-width: 4px;
-  border-right-width: 4px;
-  border-top-right-radius: 8px;
+.corner-anchor-handle:active .anchor-core,
+.corner-anchor-handle.dragging .anchor-core {
+  cursor: grabbing;
+  transform: scale(1.4);
+  background: #facc15;
+  border-color: #ffffff;
+  box-shadow: 0 0 22px rgba(250, 204, 21, 1), 0 4px 12px rgba(0, 0, 0, 0.6);
 }
 
-.corner-target.br {
-  bottom: -2px;
-  right: -2px;
-  border-bottom-width: 4px;
-  border-right-width: 4px;
-  border-bottom-right-radius: 8px;
+.corner-anchor-handle.locked {
+  cursor: default;
+  pointer-events: none;
 }
 
-.corner-target.bl {
-  bottom: -2px;
-  left: -2px;
-  border-bottom-width: 4px;
-  border-left-width: 4px;
-  border-bottom-left-radius: 8px;
+.corner-anchor-handle.locked .anchor-core {
+  width: 22px;
+  height: 22px;
+  background: #38bdf8;
+  border-width: 2.5px;
+  box-shadow: 0 0 8px rgba(56, 189, 248, 0.7);
 }
 
-.center-cross {
+.corner-anchor-handle.locked .anchor-tag {
+  display: none;
+}
+
+/* Vùng chạm giữa để dịch chuyển toàn bộ 4 góc */
+.anchor-pan-area {
   position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 18px;
-  height: 18px;
-  opacity: 0.35;
+  cursor: move;
+  touch-action: none;
+  pointer-events: auto;
+  z-index: 15;
+  border-radius: 8px;
 }
 
-.center-cross::before,
-.center-cross::after {
-  content: "";
-  position: absolute;
-  background: #ffffff;
-}
-
-.center-cross::before {
-  top: 8px;
-  left: 0;
-  width: 18px;
-  height: 2px;
-}
-
-.center-cross::after {
-  top: 0;
-  left: 8px;
-  width: 2px;
-  height: 18px;
+.anchor-pan-area.locked {
+  display: none;
 }
 
 .guide-hint {
   position: absolute;
-  bottom: 22px;
-  background: rgba(15, 23, 42, 0.75);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.82);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: #ffffff;
   padding: 6px 14px;
+  border-radius: 20px;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: center;
+  letter-spacing: 0.1px;
+  white-space: nowrap;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  pointer-events: none;
+  z-index: 20;
+}
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
@@ -1313,3 +1468,185 @@ body {
   font-weight: 800;
   color: #ef4444;
 }
+
+/* ==========================================================================
+   FIREBASE AUTH & USER ACCOUNT STYLES
+   ========================================================================== */
+.badge-role {
+  font-size: 10px;
+  font-weight: 800;
+  padding: 3px 8px;
+  border-radius: 6px;
+  letter-spacing: 0.5px;
+  background: #e2e8f0;
+  color: #475569;
+}
+
+.badge-role.admin {
+  background: #fef3c7;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.badge-role.teacher {
+  background: #eff6ff;
+  color: #1e40af;
+  border: 1px solid #bfdbfe;
+}
+
+.user-account-details {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.user-info-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.user-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #1e3a8a, #3b82f6);
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 800;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.3);
+}
+
+.user-meta-info strong {
+  display: block;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.user-school {
+  font-size: 12px;
+  color: #475569;
+  font-weight: 600;
+}
+
+.user-email {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.user-status-strip {
+  font-size: 11.5px;
+  color: #475569;
+  border-top: 1px solid #e2e8f0;
+  padding-top: 8px;
+  margin-top: 6px;
+}
+
+.status-badge-ok {
+  color: #16a34a;
+}
+
+.status-badge-pending {
+  color: #d97706;
+}
+
+.status-badge-blocked {
+  color: #dc2626;
+}
+
+/* Auth Switch Tabs */
+.auth-switch-tabs {
+  display: flex;
+  background: #f1f5f9;
+  border-radius: 8px;
+  padding: 3px;
+  gap: 4px;
+}
+
+.auth-tab-btn {
+  flex: 1;
+  padding: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.auth-tab-btn.active {
+  background: #ffffff;
+  color: #1e3a8a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* Admin Panel Styles */
+.admin-section {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.admin-users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.admin-user-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.admin-user-card.pending {
+  border-left: 4px solid #f59e0b;
+  background: #fffbeb;
+}
+
+.admin-user-card.active {
+  border-left: 4px solid #22c55e;
+}
+
+.admin-user-card.blocked {
+  border-left: 4px solid #ef4444;
+  opacity: 0.75;
+}
+
+.admin-user-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.admin-user-name {
+  font-size: 13px;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.admin-user-sub {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.admin-action-btns {
+  display: flex;
+  gap: 6px;
+  margin-top: 2px;
+}
+
