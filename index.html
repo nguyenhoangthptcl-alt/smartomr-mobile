@@ -25,6 +25,15 @@
 
   <!-- SheetJS để đọc và xuất file Excel .xlsx hoàn toàn Offline trên điện thoại -->
   <script src="vendor/xlsx.full.min.js"></script>
+  <!-- JSZip để nén toàn bộ ảnh chấm thành file ZIP tải về điện thoại -->
+  <script src="vendor/jszip.min.js"></script>
+  <!-- PDF.js đọc và trích xuất file PDF nhiều trang trực tiếp trên điện thoại -->
+  <script src="vendor/pdf.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'vendor/pdf.worker.min.js';
+    }
+  </script>
 </head>
 <body>
   <!-- Thanh App Header cố định -->
@@ -211,14 +220,15 @@
           <!-- Cài đặt nhanh dưới camera -->
           <div class="camera-options-bar">
             <label class="checkbox-pill">
+              <input type="checkbox" id="chk-auto-download-cam" checked />
+              <span>💾 Tự động tải ảnh chấm về máy khi chụp</span>
+            </label>
+            <label class="checkbox-pill">
               <input type="checkbox" id="chk-auto-gemini-cam" />
-              <span>🤖 Tự động gọi Gemini AI khi phiếu mờ</span>
+              <span>🤖 Gemini AI khi phiếu mờ</span>
             </label>
             <select id="cam-template-select" class="template-select-pill">
-              <option value="thpt_2025">Mẫu THPT 2025 (3 Phần)</option>
-              <option value="standard_40">Mẫu 40 câu ABCD</option>
-              <option value="standard_50">Mẫu 50 câu ABCD</option>
-              <option value="standard_120">Mẫu 120 câu ABCD</option>
+              <option value="thpt_2025" selected>Chuẩn Bộ GD&ĐT (8 SBD - 4 Mã đề)</option>
             </select>
           </div>
         </div>
@@ -235,9 +245,9 @@
               <div class="result-student-info">
                 <div class="res-st-name" id="cam-res-name">Học Sinh Mẫu</div>
                 <div class="res-st-meta">
-                  SBD: <strong id="cam-res-sbd">------</strong> | Đề: <strong id="cam-res-made">---</strong> | Lớp: <span id="cam-res-class">--</span>
+                  SBD: <strong id="cam-res-sbd">--------</strong> | Đề: <strong id="cam-res-made">----</strong> | Lớp: <span id="cam-res-class">--</span>
                 </div>
-                <div class="res-align-tag" id="cam-res-align">✅ Tự động căn 4 góc</div>
+                <div class="res-align-tag" id="cam-res-align">✅ Tự động căn 4 góc chuẩn Bộ</div>
               </div>
             </div>
 
@@ -250,9 +260,10 @@
 
             <!-- Nút hành động trên kết quả -->
             <div class="result-actions-row">
-              <button class="btn btn-sm btn-primary" id="btn-view-graded-cam">🔍 Xem Ảnh Đã Khoanh</button>
-              <button class="btn btn-sm btn-outline" id="btn-gemini-regrade-cam">🤖 Chấm Lại Bằng Gemini AI</button>
-              <button class="btn btn-sm btn-success" id="btn-dismiss-continue-cam">▶️ Chấm Bài Tiếp</button>
+              <button class="btn btn-sm btn-primary" id="btn-download-cam-graded">💾 Lưu Ảnh Vào Máy</button>
+              <button class="btn btn-sm btn-outline" id="btn-view-graded-cam">🔍 Xem Phóng To</button>
+              <button class="btn btn-sm btn-success" id="btn-export-excel-cam">📊 Xuất Excel</button>
+              <button class="btn btn-sm btn-ghost" id="btn-dismiss-continue-cam">▶️ Chấm Tiếp</button>
             </div>
           </div>
         </div>
@@ -260,31 +271,44 @@
     </section>
 
     <!-- ===================================================================== -->
-    <!-- TAB 2: 📁 CHẤM THEO LÔ (BATCH GRADING TỪ THƯ VIỆN) -->
+    <!-- TAB 2: 📁 CHẤM THEO LÔ (BATCH GRADING TỪ THƯ VIỆN & FILE PDF) -->
     <!-- ===================================================================== -->
     <section id="tab-batch" class="tab-view">
       <div class="view-content">
         <div class="card">
           <div class="card-header">
-            <h3>📁 Chấm Theo Lô Từ Thư Viện Ảnh Điện Thoại</h3>
+            <h3>📁 Chấm Theo Lô (PDF, JPG, PNG)</h3>
           </div>
           <p class="card-desc">
-            Chọn nhiều ảnh chụp phiếu thi từ thư viện điện thoại hoặc file quét máy scan. Hệ thống sẽ tự động nắn thẳng phối cảnh và chấm lần lượt từng bài.
+            Nạp file phiếu trả lời trắc nghiệm dạng <strong>PDF (kể cả nhiều trang)</strong> hoặc hàng loạt ảnh <strong>JPG, PNG</strong>. Hệ thống sẽ trích xuất từng bài, hiển thị hàng chờ và chỉ chấm khi bấm <strong>Thực Hiện Chấm Bài</strong>.
           </p>
 
           <div class="batch-upload-box" id="batch-drop-area">
-            <div class="upload-icon">📸</div>
-            <strong>Bấm để chọn nhiều ảnh phiếu thi</strong>
-            <span class="subtext">Hỗ trợ JPG, PNG, HEIC. Có thể chọn 10, 20 hoặc cả trăm ảnh cùng lúc!</span>
-            <input type="file" id="batch-files-input" accept="image/*" multiple style="display: none;" />
+            <div class="upload-icon">📄📸</div>
+            <strong>Bấm để nạp file phiếu thi (PDF, JPG, PNG)</strong>
+            <span class="subtext">Hỗ trợ file PDF nhiều trang, ảnh chụp từ thư viện điện thoại hoặc file quét máy scan.</span>
+            <input type="file" id="batch-files-input" accept="image/*,application/pdf,.pdf,.jpg,.jpeg,.png" multiple style="display: none;" />
             <button class="btn btn-primary" id="btn-trigger-batch-upload" style="margin-top: 10px;">
-              📂 Chọn Ảnh Từ Điện Thoại
+              📂 Nạp File Phiếu (PDF, JPG, PNG)
+            </button>
+          </div>
+
+          <!-- Khu vực hàng chờ danh sách phiếu trước khi bấm chấm -->
+          <div id="batch-pending-box" class="pending-queue-box" style="display: none; margin-top: 12px; background: #f8fafc; border: 1.5px dashed #cbd5e1; border-radius: 8px; padding: 12px;">
+            <div class="flex-between" style="margin-bottom: 8px;">
+              <div>📋 Hàng chờ chấm: <strong id="batch-pending-count" style="color:#2563eb;">0</strong> phiếu</div>
+              <button class="btn btn-sm btn-ghost" id="btn-clear-pending-queue" style="color:#ef4444;">✕ Hủy hàng chờ</button>
+            </div>
+            <div id="batch-pending-list" style="max-height: 140px; overflow-y: auto; font-size: 12.5px; color: #475569; margin-bottom: 10px;"></div>
+            
+            <button class="btn btn-success btn-block" id="btn-run-batch-grade" style="font-size: 16px; padding: 14px; font-weight: bold; background: linear-gradient(135deg, #16a34a, #15803d); box-shadow: 0 4px 12px rgba(22, 163, 74, 0.35);">
+              ▶️ THỰC HIỆN CHẤM BÀI (<span id="btn-pending-count-label">0</span> Phiếu)
             </button>
           </div>
 
           <div class="form-row" style="margin-top: 10px;">
             <button class="btn btn-outline btn-block" id="btn-generate-sim-batch">
-              ⚡ Tạo & Chấm Thử 8 Phiếu Mẫu
+              ⚡ Nạp & Chấm Thử Phiếu Mẫu Chuẩn Bộ GD&ĐT
             </button>
           </div>
 
@@ -305,6 +329,7 @@
           <div class="card-header flex-between">
             <h3>Danh Sách Bài Đã Chấm (<span id="batch-count-badge">0</span>)</h3>
             <div class="btn-group">
+              <button class="btn btn-sm btn-primary" id="btn-download-all-batch-images" title="Nén tất cả ảnh bài đã chấm thành file ZIP tải về điện thoại">💾 Tải Tất Cả Ảnh (ZIP)</button>
               <button class="btn btn-sm btn-success" id="btn-export-excel-batch">📊 Xuất Excel</button>
               <button class="btn btn-sm btn-danger" id="btn-clear-batch">🗑️ Xóa</button>
             </div>
@@ -347,7 +372,7 @@
             <div class="struct-inputs" id="cfg-p1-inputs">
               <div class="input-inline">
                 <span>Số câu cần chấm:</span>
-                <input type="number" id="cfg-p1-count" min="1" max="120" value="24" class="form-input-sm" />
+                <input type="number" id="cfg-p1-count" min="1" max="120" value="40" class="form-input-sm" />
               </div>
               <div class="input-inline">
                 <span>Điểm mỗi câu:</span>
@@ -367,7 +392,7 @@
             <div class="struct-inputs" id="cfg-p2-inputs">
               <div class="input-inline">
                 <span>Số câu cần chấm:</span>
-                <input type="number" id="cfg-p2-count" min="1" max="8" value="4" class="form-input-sm" />
+                <input type="number" id="cfg-p2-count" min="1" max="8" value="8" class="form-input-sm" />
               </div>
               <div class="input-inline">
                 <span>Điểm tối đa mỗi câu:</span>
@@ -383,18 +408,18 @@
           <div class="structure-block">
             <div class="struct-header">
               <label class="switch-label">
-                <input type="checkbox" id="cfg-p3-enable" />
+                <input type="checkbox" id="cfg-p3-enable" checked />
                 <strong>Phần III: Trả lời ngắn (Điền số âm / thập phân)</strong>
               </label>
             </div>
-            <div class="struct-inputs" id="cfg-p3-inputs" style="opacity: 0.5;">
+            <div class="struct-inputs" id="cfg-p3-inputs">
               <div class="input-inline">
                 <span>Số câu cần chấm:</span>
-                <input type="number" id="cfg-p3-count" min="1" max="6" value="6" class="form-input-sm" disabled />
+                <input type="number" id="cfg-p3-count" min="1" max="6" value="6" class="form-input-sm" />
               </div>
               <div class="input-inline">
                 <span>Điểm mỗi câu:</span>
-                <input type="number" step="0.05" id="cfg-p3-pts" value="0.25" class="form-input-sm" disabled />
+                <input type="number" step="0.05" id="cfg-p3-pts" value="0.25" class="form-input-sm" />
               </div>
             </div>
           </div>
@@ -419,7 +444,7 @@
             <div class="form-col" style="flex: 1.2;">
               <label>Thêm mã đề mới:</label>
               <div style="display: flex; gap: 4px;">
-                <input type="text" id="key-new-made-input" placeholder="VD: 103" maxlength="3" class="form-input" />
+                <input type="text" id="key-new-made-input" placeholder="VD: 0102" maxlength="4" class="form-input" />
                 <button class="btn btn-outline" id="btn-add-made-btn">➕ Thêm</button>
               </div>
             </div>
@@ -481,7 +506,7 @@
           <details class="collapsible-box" style="margin-top: 10px;">
             <summary>➕ Thêm thủ công từng học sinh</summary>
             <div class="form-row" style="margin-top: 8px;">
-              <input type="text" id="inp-st-sbd" placeholder="SBD (6 số, VD: 012351)" maxlength="6" class="form-input-sm" />
+              <input type="text" id="inp-st-sbd" placeholder="SBD (8 số, VD: 24012345)" maxlength="8" class="form-input-sm" />
               <input type="text" id="inp-st-name" placeholder="Họ và Tên học sinh" class="form-input-sm" />
               <input type="text" id="inp-st-class" placeholder="Lớp (12A1)" class="form-input-sm" />
               <button class="btn btn-sm btn-success" id="btn-add-single-student">Thêm</button>
@@ -682,12 +707,10 @@
               <option value="standard_40">Mẫu 40 câu A/B/C/D</option>
               <option value="standard_50">Mẫu 50 câu A/B/C/D</option>
               <option value="standard_120">Mẫu 120 câu A/B/C/D</option>
-              <option value="thpt_2025_tuluan">Mẫu THPT 2025 + Tự luận (2 mặt)</option>
-              <option value="standard_40_tuluan">Mẫu 40 câu + Tự luận chung 1 tờ</option>
             </select>
           </div>
           <div class="form-row" style="margin-top: 8px;">
-            <a id="btn-download-pdf-link" href="api/templates/thpt_2025/blank.pdf" target="_blank" rel="noopener" class="btn btn-outline btn-block" style="text-align: center;">
+            <a id="btn-download-pdf-link" href="/api/templates/thpt_2025/blank-pdf" target="_blank" class="btn btn-outline btn-block" style="text-align: center;">
               🖨️ Tải File PDF Khổ A4
             </a>
           </div>
@@ -782,6 +805,10 @@
           <div class="form-group">
             <label>Số điện thoại liên hệ:</label>
             <input type="tel" id="inp-reg-phone" placeholder="VD: 0988..." class="form-input" />
+          </div>
+          <div class="form-group">
+            <label style="color:#d97706;">Mã kích hoạt Admin (Dành cho Thầy Hoàng):</label>
+            <input type="password" id="inp-reg-admin-code" placeholder="Để trống nếu là giáo viên đăng ký" class="form-input" />
           </div>
           <p style="font-size: 11px; color: #64748b; margin-bottom: 10px;">
             * Tài khoản đăng ký mới sẽ được gửi tới <strong>Thầy Nguyễn Văn Hoàng (Admin)</strong> phê duyệt để kích hoạt sử dụng.
