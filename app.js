@@ -2030,6 +2030,15 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
       }
     });
 
+    // Chọn mẫu phiếu in -> đổi đường dẫn tải PDF tương ứng
+    const selPrint = document.getElementById("sel-print-template");
+    const linkPdf = document.getElementById("btn-download-pdf-link");
+    const updatePdfLink = () => {
+      if (selPrint && linkPdf) linkPdf.setAttribute("href", `api/templates/${selPrint.value}/blank.pdf`);
+    };
+    selPrint?.addEventListener("change", updatePdfLink);
+    updatePdfLink();
+
     // Auth Modal events
     document.getElementById("btn-close-auth-modal")?.addEventListener("click", closeAuthModal);
     document.getElementById("btn-trigger-login-modal")?.addEventListener("click", () => openAuthModal(false));

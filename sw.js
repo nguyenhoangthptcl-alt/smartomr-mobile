@@ -13,7 +13,8 @@ const STATIC_ASSETS = [
   "./icons/icon-512.png",
   "./icons/apple-touch-icon.png",
   "./favicon.png",
-  "./manifest.webmanifest"
+  "./manifest.webmanifest",
+  "./api/templates/thpt_2025/blank.pdf"
 ];
 
 self.addEventListener("install", (event) => {
