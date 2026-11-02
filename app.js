@@ -127,7 +127,7 @@
   // =========================================================================
   if ("serviceWorker" in navigator) {
     window.addEventListener("load", () => {
-      navigator.serviceWorker.register("/sw.js").then((reg) => {
+      navigator.serviceWorker.register("sw.js").then((reg) => {
         console.log("[PWA] Service Worker đã đăng ký thành công!");
       }).catch((err) => {
         console.warn("[PWA] Lỗi đăng ký Service Worker:", err);
@@ -731,7 +731,7 @@
   // 5. LÕI GỬI YÊU CẦU CHẤM BÀI (HỖ TRỢ BACKEND + GEMINI AI DIRECT)
   // =========================================================================
   async function processGradingRequest({ base64Data, rawBase64, manualCorners, templateId, useGemini, sourceName, isCameraCapture }) {
-    const activeKey = state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_101;
+    const activeKey = state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_0101;
     const scoringCfg = activeKey.scoring_config || DEFAULT_STRUCTURE;
 
     let gradeResult = null;
@@ -768,7 +768,31 @@
       console.log("[Grade] Không kết nối được Backend FastAPI, thử chế độ độc lập/Gemini AI trực tiếp...");
     }
 
-    // Ưu tiên 2: Nếu chưa có kết quả và có Gemini Key -> Gọi trực tiếp Google Gemini Vision API từ điện thoại
+    // Ưu tiên 2: Bộ nhận diện nội bộ theo mẫu phiếu chuẩn (chạy ngay trên máy, không cần mạng)
+    let localFail = "";
+    if (!gradeResult) {
+      const local = await readSheetLocally([base64Data, rawBase64]);
+      if (local.ok) {
+        const aiJson = Object.assign({}, local.data, {
+          _method: `OMR nội bộ — 4 ô định vị${local.markers.extra ? " + " + local.markers.extra + " ô phụ" : ""}`,
+          _warnings: local.flags.map((f) => `Phần ${f.part}${f.q ? " câu " + f.q : ""}${f.sub ? f.sub : ""}${f.pos ? " cột " + f.pos : ""}: ${f.type === "multi" ? "tô nhiều ô" : "để trống"}`)
+        });
+        const scored = scoreFromAiRead(aiJson, templateId, scoringCfg);
+        gradeResult = scored.result;
+        gradeResult.flags = local.flags;
+        try {
+          const usedKey = (findAnswerKey(gradeResult.made) || {}).key || activeKey;
+          gradedImage = drawGradedOverlay(local, usedKey, scoringCfg);
+        } catch (ovErr) {
+          console.warn("[Overlay]", ovErr);
+          gradedImage = base64Data;
+        }
+      } else {
+        localFail = local.reason;
+      }
+    }
+
+    // Ưu tiên 3: Nếu phiếu mờ/không bắt được định vị và có Gemini Key -> nhờ Gemini Vision đọc
     if (!gradeResult && state.geminiKey) {
       try {
         const geminiRes = await callGeminiVisionDirect(base64Data, templateId, scoringCfg);
@@ -779,14 +803,17 @@
       }
     }
 
-    // Ưu tiên 3: Nếu không có mạng và không có backend -> Chấm mô phỏng giả lập Offline
+    // Không đọc được: báo lỗi rõ ràng, KHÔNG chấm điểm giả
     if (!gradeResult) {
-      gradeResult = mockOfflineGrade(base64Data, templateId, scoringCfg);
-      gradedImage = base64Data;
+      const msg = localFail || "Không đọc được phiếu.";
+      if (isCameraCapture) alert("⚠️ Không chấm được phiếu này.\n\n" + msg);
+      console.warn("[Grade] Thất bại:", sourceName, msg);
+      return { error: msg, name: sourceName };
     }
 
     // Khớp danh sách học sinh theo SBD
-    const matchedSt = state.students.find((s) => s.sbd === gradeResult.sbd);
+    const normSbd = (v) => String(v || "").trim().replace(/^0+/, "");
+    const matchedSt = state.students.find((s) => s.sbd === gradeResult.sbd || (normSbd(s.sbd) && normSbd(s.sbd) === normSbd(gradeResult.sbd)));
     if (matchedSt) {
       gradeResult.student_name = matchedSt.full_name;
       gradeResult.student_class = matchedSt.class_name;
@@ -863,6 +890,108 @@
     sheet.style.display = "block";
   }
 
+  // Tra đáp án theo mã đề đọc được (chấp nhận "0101" / "101" / "101" có số 0 đầu)
+  function findAnswerKey(madeRaw) {
+    const m = String(madeRaw || "").trim();
+    if (!m || m.includes("?")) return null;
+    const strip = (v) => String(v).replace(/^0+/, "");
+    for (const k of Object.keys(state.answerKeys)) {
+      if (k === m || strip(k) === strip(m)) return { madeKey: k, key: state.answerKeys[k] };
+    }
+    return null;
+  }
+
+  // =========================================================================
+  // 5b. NHẬN DIỆN PHIẾU NỘI BỘ (KHÔNG CẦN SERVER / KHÔNG CẦN INTERNET)
+  // =========================================================================
+  function loadImageToCanvas(dataUrl, maxDim) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+        const c = document.createElement("canvas");
+        c.width = Math.round(img.naturalWidth * scale);
+        c.height = Math.round(img.naturalHeight * scale);
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        resolve(c);
+      };
+      img.onerror = () => reject(new Error("Không đọc được ảnh"));
+      img.src = dataUrl;
+    });
+  }
+
+  // Thử đọc phiếu bằng bộ nhận diện nội bộ trên lần lượt các ảnh (ảnh đã nắn, ảnh gốc)
+  async function readSheetLocally(dataUrls) {
+    if (!window.SmartOMREngine) return { ok: false, reason: "Chưa tải được bộ nhận diện (omr-engine.js)." };
+    let lastReason = "";
+    for (const url of dataUrls) {
+      if (!url) continue;
+      try {
+        const canvas = await loadImageToCanvas(url, 1800);
+        const ctx = canvas.getContext("2d");
+        const res = window.SmartOMREngine.readFromImageData(ctx.getImageData(0, 0, canvas.width, canvas.height));
+        if (res.ok) { res.canvas = canvas; return res; }
+        lastReason = res.reason;
+      } catch (e) {
+        lastReason = String(e.message || e);
+      }
+    }
+    return { ok: false, reason: lastReason || "Không đọc được ảnh phiếu." };
+  }
+
+  // Vẽ kết quả chấm lên ảnh: xanh = đúng, đỏ = sai (kèm khoanh đáp án đúng cho Phần I)
+  function drawGradedOverlay(readRes, key, scoringCfg) {
+    const { canvas, H, data } = readRes;
+    const out = document.createElement("canvas");
+    out.width = canvas.width; out.height = canvas.height;
+    const ctx = out.getContext("2d");
+    ctx.drawImage(canvas, 0, 0);
+    const E = window.SmartOMREngine;
+    const groups = {};
+    E.LAYOUT.groups.forEach((g) => { groups[g.id] = g; });
+    const circle = (id, i, color, fill) => {
+      const g = groups[id]; if (!g || !g.pts[i]) return;
+      const p = g.pts[i]; const c = E.project(H, p[0], p[1]);
+      const r = E.LAYOUT.r * E.pxPerPt(H, p[0], p[1]);
+      ctx.beginPath(); ctx.arc(c[0], c[1], r * (fill ? 0.95 : 1.25), 0, Math.PI * 2);
+      if (fill) { ctx.fillStyle = color; ctx.globalAlpha = 0.45; ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.lineWidth = Math.max(1.5, r * 0.28); ctx.strokeStyle = color; ctx.stroke();
+    };
+    const GREEN = "#16a34a", RED = "#dc2626";
+    const keyP1 = key.part1 || {}, keyP2 = key.part2 || {}, keyP3 = key.part3 || {};
+    if (scoringCfg.enable_part1) {
+      for (let q = 1; q <= scoringCfg.part1_count; q++) {
+        const ans = data.part1[q], ok = String(keyP1[q] || "").toUpperCase();
+        const ai = "ABCD".indexOf(ans), ki = "ABCD".indexOf(ok);
+        if (ans && ai === ki) circle("p1." + q, ai, GREEN, true);
+        else { if (ans) circle("p1." + q, ai, RED, true); if (ki >= 0) circle("p1." + q, ki, GREEN, false); }
+      }
+    }
+    if (scoringCfg.enable_part2) {
+      for (let q = 1; q <= scoringCfg.part2_count; q++) {
+        ["a", "b", "c", "d"].forEach((k) => {
+          const ans = data.part2[q][k]; if (!ans) return;
+          const okv = String((keyP2[q] || {})[k] || "").toUpperCase();
+          circle("p2." + q + "." + k, ans === "Đ" ? 0 : 1, ans.toUpperCase() === okv ? GREEN : RED, true);
+        });
+      }
+    }
+    if (scoringCfg.enable_part3) {
+      for (let q = 1; q <= scoringCfg.part3_count; q++) {
+        const ans = String(data.part3[q] || "");
+        const good = ans && ans.replace(".", ",") === String(keyP3[q] || "").trim().replace(".", ",");
+        const color = good ? GREEN : RED;
+        for (let c = 0; c < ans.length && c < 4; c++) {
+          const ch = ans[c];
+          if (ch === "-") circle("p3." + q + ".minus", 0, color, true);
+          else if (ch === ",") circle("p3." + q + ".comma", c - 1, color, true);
+          else circle("p3." + q + ".c" + c, parseInt(ch, 10), color, true);
+        }
+      }
+    }
+    return out.toDataURL("image/jpeg", 0.9);
+  }
+
   // =========================================================================
   // 6. GỌI GEMINI VISION TRỰC TIẾP TỪ CLIENT (TỰ ĐỘNG DÒ MODEL TRÁNH 404)
   // =========================================================================
@@ -884,7 +1013,7 @@
     const p3Count = scoringCfg.enable_part3 ? scoringCfg.part3_count : 0;
 
     const promptText = `Bạn là hệ thống nhận diện phiếu trả lời trắc nghiệm (OMR) của Bộ GD&ĐT Việt Nam.
-Hãy đọc kỹ SBD (6 số), Mã đề (3 số), Phần I (1-${p1Count}), Phần II (1-${p2Count} mỗi câu 4 ý a,b,c,d Đ hoặc S), Phần III (1-${p3Count}).
+Hãy đọc kỹ SBD (8 số), Mã đề (4 số), Phần I (1-${p1Count}), Phần II (1-${p2Count} mỗi câu 4 ý a,b,c,d Đ hoặc S), Phần III (1-${p3Count}).
 Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 {
   "sbd": "012345",
@@ -935,9 +1064,12 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
   }
 
   function scoreFromAiRead(aiJson, templateId, scoringCfg) {
-    const sbd = String(aiJson.sbd || "012345").padStart(6, "0").slice(0, 6);
-    const made = String(aiJson.made || state.activeMade).padStart(3, "0").slice(0, 3);
-    const key = state.answerKeys[made] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_101;
+    const sbd = String(aiJson.sbd || "").padStart(8, "0").slice(0, 8);
+    const madeRaw = String(aiJson.made || "").trim();
+    const foundKey = findAnswerKey(madeRaw);
+    const made = foundKey ? foundKey.madeKey : (madeRaw || state.activeMade);
+    const key = foundKey ? foundKey.key : (state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_0101);
+    const keyWarning = foundKey ? "" : `Mã đề "${madeRaw || "?"}" chưa có đáp án — đang chấm theo mã đề ${state.activeMade}`;
 
     let p1Score = 0.0, p1Correct = 0;
     const p1Count = scoringCfg.enable_part1 ? scoringCfg.part1_count : 0;
@@ -1001,7 +1133,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         part1_summary: { enabled: scoringCfg.enable_part1, total_questions: p1Count, correct: p1Correct, score: p1Score },
         part2_summary: { enabled: scoringCfg.enable_part2, total_questions: p2Count, total_sub_correct: p2SubCorrect, score: p2Score },
         part3_summary: { enabled: scoringCfg.enable_part3, total_questions: p3Count, correct: p3Correct, score: p3Score },
-        alignment: { alignment_method: "Gemini Vision AI (Trực tiếp)" }
+        alignment: { alignment_method: aiJson._method || "Gemini Vision AI (Trực tiếp)", warnings: (aiJson._warnings || []).concat(keyWarning ? [keyWarning] : []) }
       }
     };
   }
@@ -1141,6 +1273,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
     if (progCard) progCard.style.display = "block";
     const total = queue.length;
+    const failed = [];
 
     for (let i = 0; i < total; i++) {
       const item = queue[i];
@@ -1149,13 +1282,14 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
       if (progBar) progBar.style.width = `${pct}%`;
       if (progPercent) progPercent.textContent = `${pct}%`;
 
-      await processGradingRequest({
+      const gr = await processGradingRequest({
         base64Data: item.dataUrl,
         templateId: "thpt_2025",
         useGemini: state.autoGemini,
         sourceName: item.name,
         isCameraCapture: false
       });
+      if (gr && gr.error) failed.push(`${item.name}: ${gr.error}`);
       renderBatchCards();
     }
 
@@ -1163,10 +1297,11 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     state.batchPendingFiles = [];
     renderBatchPendingQueue();
 
-    if (progText) progText.textContent = `✅ Đã chấm xong toàn bộ ${total} bài trong lô!`;
+    if (progText) progText.textContent = failed.length ? `⚠️ Chấm xong ${total - failed.length}/${total} bài, ${failed.length} bài không đọc được` : `✅ Đã chấm xong toàn bộ ${total} bài trong lô!`;
+    if (failed.length) alert("⚠️ Có " + failed.length + " phiếu không đọc được (cần chụp/scan lại):\n\n" + failed.slice(0, 8).join("\n"));
     setTimeout(() => {
       if (progCard) progCard.style.display = "none";
-    }, 3500);
+    }, failed.length ? 8000 : 3500);
   }
 
   // Tải toàn bộ ảnh phiếu đã chấm thành tệp ZIP
@@ -1290,7 +1425,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
       return `<option value="${code}" ${code === state.activeMade ? "selected" : ""}>Mã đề ${code}</option>`;
     }).join("");
 
-    const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_101;
+    const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_0101;
     const cfg = curKey.scoring_config || DEFAULT_STRUCTURE;
 
     // Load structure checkboxes
@@ -1431,7 +1566,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     const raw = (document.getElementById("txt-fast-answers").value || "").trim().toUpperCase();
     if (!raw) return;
 
-    const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_101;
+    const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_0101;
     if (!curKey.part1) curKey.part1 = {};
 
     let matches = [];

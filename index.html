@@ -228,7 +228,7 @@
               <span>🤖 Gemini AI khi phiếu mờ</span>
             </label>
             <select id="cam-template-select" class="template-select-pill">
-              <option value="thpt_2025" selected>Chuẩn Bộ GD&ĐT (8 SBD - 4 Mã đề)</option>
+              <option value="thpt_2025" selected>Phiếu chuẩn Bộ GD&ĐT (SBD 8 số - Mã đề 4 số)</option>
             </select>
           </div>
         </div>
@@ -699,21 +699,29 @@
             <h3>🖨️ In Phiếu Trắc Nghiệm Chuẩn Bộ GD&ĐT</h3>
           </div>
           <p class="card-desc">
-            Tải mẫu phiếu A4 đúng chuẩn Bộ GD&ĐT (có 4 ô vuông đen định vị góc) để in phát cho học sinh làm bài.
+            Phiếu trả lời trắc nghiệm A4 chuẩn Bộ GD&ĐT: SBD 8 số, Mã đề 4 số, Phần I (40 câu A/B/C/D),
+            Phần II (8 câu Đúng/Sai), Phần III (6 câu trả lời ngắn). Ứng dụng nhận diện đúng theo mẫu này
+            nhờ các ô vuông đen định vị ở 4 góc.
           </p>
           <div class="form-row">
             <select id="sel-print-template" class="form-select">
-              <option value="thpt_2025">Mẫu THPT Quốc Gia 2025 (3 Phần)</option>
-              <option value="standard_40">Mẫu 40 câu A/B/C/D</option>
-              <option value="standard_50">Mẫu 50 câu A/B/C/D</option>
-              <option value="standard_120">Mẫu 120 câu A/B/C/D</option>
+              <option value="thpt_2025" selected>Phiếu TLTN chuẩn Bộ GD&ĐT (40 câu + 8 Đ/S + 6 trả lời ngắn)</option>
             </select>
           </div>
           <div class="form-row" style="margin-top: 8px;">
-            <a id="btn-download-pdf-link" href="/api/templates/thpt_2025/blank-pdf" target="_blank" class="btn btn-outline btn-block" style="text-align: center;">
-              🖨️ Tải File PDF Khổ A4
+            <a id="btn-download-pdf-link" href="templates/phieu_tltn_40_cau.pdf" download="Phieu_TLTN_Chuan_BGDDT_A4.pdf" class="btn btn-outline btn-block" style="text-align: center;">
+              🖨️ Tải File PDF Khổ A4 (để in)
             </a>
           </div>
+          <div class="form-row" style="margin-top: 8px;">
+            <a id="btn-download-png-link" href="templates/phieu_tltn_40_cau.png" download="Phieu_TLTN_Chuan_BGDDT_A4.png" class="btn btn-outline btn-block" style="text-align: center;">
+              🖼️ Tải Ảnh PNG (xem nhanh trên điện thoại)
+            </a>
+          </div>
+          <p class="card-desc" style="margin-top: 8px; font-size: 12px;">
+            <b>Lưu ý khi in:</b> in khổ A4, chọn tỉ lệ <b>100% / Actual size</b> (không chọn "Fit to page"),
+            in đen trắng độ nét cao; <b>không cắt, không che</b> 4 ô vuông đen ở góc. Học sinh tô kín ô tròn bằng bút chì đen hoặc bút mực đen.
+          </p>
         </div>
 
         <!-- 5. Thông tin Bản Quyền -->
@@ -959,6 +967,7 @@
   </nav>
 
   <!-- Script logic ứng dụng di động -->
+  <script src="omr-engine.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -1,9 +1,12 @@
-const CACHE_NAME = "smartomr-pro-v2.7.1";
+const CACHE_NAME = "smartomr-pro-v2.8.0";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
+  "./omr-engine.js",
+  "./templates/phieu_tltn_40_cau.pdf",
+  "./templates/phieu_tltn_40_cau.png",
   "./firebase-config.js",
   "./vendor/firebase-app-compat.js",
   "./vendor/firebase-auth-compat.js",
