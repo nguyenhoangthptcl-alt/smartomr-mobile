@@ -20,7 +20,7 @@
     projectId: "chamthi-a06f1",
     storageBucket: "chamthi-a06f1.firebasestorage.app",
     messagingSenderId: "616917466536",
-    appId: "1:616917466536:web:874ed855565e714df0319dhttps://nguyenhoangthptcl-alt.github.io/smartomr-mobile/"
+    appId: "1:616917466536:web:874ed855565e714df0319d"
   };
 
   // Mật khẩu bí mật Admin dùng khi tạo tài khoản Admin đầu tiên (nếu cần kích hoạt ngay)
@@ -32,14 +32,16 @@
   let firestoreDb = null;
   let currentUserProfile = null;
 
-  // Lấy cấu hình đã lưu
+  // Lấy cấu hình: ưu tiên cấu hình hợp lệ do người dùng lưu; nếu rỗng/hỏng thì dùng cấu hình nhúng sẵn
   function getFirebaseConfig() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
-      return saved ? JSON.parse(saved) : DEFAULT_FIREBASE_CONFIG;
-    } catch (e) {
-      return DEFAULT_FIREBASE_CONFIG;
-    }
+      if (saved) {
+        const cfg = JSON.parse(saved);
+        if (cfg && cfg.apiKey && cfg.projectId) return cfg;
+      }
+    } catch (e) {}
+    return EMBEDDED_FIREBASE_CONFIG;
   }
 
   function saveFirebaseConfig(cfg) {
@@ -131,6 +133,26 @@
   // AUTH API: ĐĂNG KÝ, ĐĂNG NHẬP, DUYỆT TÀI KHOẢN
   // =========================================================================
 
+  // Dịch mã lỗi Firebase sang tiếng Việt dễ hiểu
+  function translateAuthError(err) {
+    const code = (err && err.code) || "";
+    const map = {
+      "auth/invalid-credential": "Email hoặc mật khẩu không chính xác!",
+      "auth/wrong-password": "Mật khẩu không chính xác!",
+      "auth/user-not-found": "Email này chưa có tài khoản. Vui lòng đăng ký!",
+      "auth/invalid-email": "Địa chỉ email không hợp lệ!",
+      "auth/user-disabled": "Tài khoản đã bị vô hiệu hóa trên Firebase!",
+      "auth/too-many-requests": "Đăng nhập sai quá nhiều lần, vui lòng thử lại sau ít phút!",
+      "auth/network-request-failed": "Không kết nối được mạng/Firebase. Kiểm tra Internet rồi thử lại!",
+      "auth/invalid-api-key": "API Key Firebase không hợp lệ — kiểm tra lại firebase-config.js!",
+      "auth/api-key-not-valid": "API Key Firebase không hợp lệ — kiểm tra lại firebase-config.js!",
+      "auth/app-not-authorized": "Tên miền này chưa được phép dùng API Key — kiểm tra hạn chế API Key trong Google Cloud!",
+      "auth/operation-not-allowed": "Chưa bật đăng nhập Email/Password trong Firebase Authentication!",
+      "permission-denied": "Firestore từ chối quyền đọc hồ sơ — kiểm tra Firestore Rules!"
+    };
+    return map[code] || ((err && err.message) || "Lỗi không xác định") + (code ? " (" + code + ")" : "");
+  }
+
   /**
    * Đăng ký tài khoản giáo viên mới
    */
@@ -198,15 +220,46 @@
 
     // 1. Nếu có Firebase Cloud
     if (isFirebaseConfigured() && firebaseAuth && firestoreDb) {
-      const userCred = await firebaseAuth.signInWithEmailAndPassword(cleanEmail, password);
+      let userCred;
+      try {
+        userCred = await firebaseAuth.signInWithEmailAndPassword(cleanEmail, password);
+      } catch (err) {
+        throw new Error(translateAuthError(err));
+      }
       const user = userCred.user;
-      const doc = await firestoreDb.collection("users").doc(user.uid).get();
-
-      if (!doc.exists) {
-        throw new Error("Không tìm thấy hồ sơ người dùng trên Firestore!");
+      const ref = firestoreDb.collection("users").doc(user.uid);
+      let profile = null;
+      try {
+        const doc = await ref.get();
+        profile = doc.exists ? doc.data() : null;
+      } catch (err) {
+        await firebaseAuth.signOut().catch(() => {});
+        throw new Error(translateAuthError(err));
       }
 
-      const profile = doc.data();
+      // Tài khoản đã có trong Firebase Authentication nhưng chưa có hồ sơ Firestore -> tự tạo
+      if (!profile) {
+        const isAdmin = cleanEmail === DEFAULT_ADMIN_EMAIL;
+        profile = {
+          uid: user.uid,
+          email: cleanEmail,
+          displayName: user.displayName || cleanEmail.split("@")[0],
+          school: "THPT Chi Lăng",
+          phone: "",
+          role: isAdmin ? "admin" : "teacher",
+          status: isAdmin ? "approved" : "pending",
+          geminiApiKey: "",
+          geminiModel: "gemini-flash-latest",
+          createdAt: new Date().toISOString(),
+          approvedAt: isAdmin ? new Date().toISOString() : null
+        };
+        try {
+          await ref.set(profile);
+        } catch (err) {
+          console.warn("[Firebase] Không tạo được hồ sơ Firestore:", err);
+        }
+      }
+
       currentUserProfile = profile;
       localStorage.setItem(STORAGE_KEY_SESSION, JSON.stringify(profile));
       return profile;

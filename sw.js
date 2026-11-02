@@ -1,4 +1,4 @@
-const CACHE_NAME = "smartomr-pro-v2.7.0";
+const CACHE_NAME = "smartomr-pro-v2.7.1";
 const STATIC_ASSETS = [
   "./",
   "./index.html",
@@ -51,6 +51,22 @@ self.addEventListener("fetch", (event) => {
   // Bỏ qua các yêu cầu API hoặc không phải GET để chạy qua mạng
   if (event.request.method !== "GET" || url.pathname.includes("/api/")) {
     return;
+  }
+
+  // Network-first cho trang và mã nguồn để luôn nhận bản sửa lỗi mới nhất
+  if (event.request.mode === "navigate" || /\.(html|js)$/.test(url.pathname) || url.pathname.endsWith("/")) {
+    if (!url.pathname.includes("/vendor/")) {
+      event.respondWith(
+        fetch(event.request).then((res) => {
+          if (res && res.status === 200 && url.origin === location.origin) {
+            const copy = res.clone();
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, copy));
+          }
+          return res;
+        }).catch(() => caches.match(event.request).then((m) => m || caches.match("./index.html")))
+      );
+      return;
+    }
   }
 
   event.respondWith(
