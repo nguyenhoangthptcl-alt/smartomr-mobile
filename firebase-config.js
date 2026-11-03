@@ -439,6 +439,8 @@
     loginUser,
     logoutUser,
     getCurrentUser,
+    getFirestore: () => firestoreDb,
+    getUid: () => (firebaseAuth && firebaseAuth.currentUser ? firebaseAuth.currentUser.uid : null),
     updateMyGeminiKey,
     adminFetchAllUsers,
     adminApproveUser,

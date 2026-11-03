@@ -228,7 +228,9 @@
               <span>🤖 Gemini AI khi phiếu mờ</span>
             </label>
             <select id="cam-template-select" class="template-select-pill">
-              <option value="thpt_2025" selected>Phiếu chuẩn Bộ GD&ĐT (SBD 8 số - Mã đề 4 số)</option>
+              <option value="auto" selected>Tự nhận diện loại phiếu</option>
+              <option value="bgd40">Phiếu chuẩn Bộ GD&ĐT (SBD 8 - Mã đề 4)</option>
+              <option value="qm2025">Phiếu QM 2025 - A4 (SBD 6 - Mã đề 3)</option>
             </select>
           </div>
         </div>
@@ -483,6 +485,13 @@
     <!-- ===================================================================== -->
     <!-- TAB 4: 👨‍🎓 HỌC SINH & BẢNG ĐIỂM EXCEL -->
     <!-- ===================================================================== -->
+    <!-- ===================================================================== -->
+    <!-- TAB: 📊 KẾT QUẢ — DUYỆT BÀI, THỐNG KÊ, XUẤT BÁO CÁO -->
+    <!-- ===================================================================== -->
+    <section id="tab-results" class="tab-view">
+      <div class="view-content" id="results-root"></div>
+    </section>
+
     <section id="tab-students" class="tab-view">
       <div class="view-content">
         <!-- Nạp Excel & Quản lý học sinh -->
@@ -699,13 +708,14 @@
             <h3>🖨️ In Phiếu Trắc Nghiệm Chuẩn Bộ GD&ĐT</h3>
           </div>
           <p class="card-desc">
-            Phiếu trả lời trắc nghiệm A4 chuẩn Bộ GD&ĐT: SBD 8 số, Mã đề 4 số, Phần I (40 câu A/B/C/D),
-            Phần II (8 câu Đúng/Sai), Phần III (6 câu trả lời ngắn). Ứng dụng nhận diện đúng theo mẫu này
-            nhờ các ô vuông đen định vị ở 4 góc.
+            Hai mẫu phiếu A4 được hỗ trợ (Phần I 40 câu A/B/C/D, Phần II 8 câu Đúng/Sai, Phần III 6 câu trả lời ngắn):
+            phiếu chuẩn Bộ GD&ĐT (SBD 8 số, Mã đề 4 số) và phiếu QM 2025 (SBD 6 số, Mã đề 3 số).
+            Ứng dụng tự nhận diện loại phiếu nhờ các ô vuông đen định vị.
           </p>
           <div class="form-row">
             <select id="sel-print-template" class="form-select">
-              <option value="thpt_2025" selected>Phiếu TLTN chuẩn Bộ GD&ĐT (40 câu + 8 Đ/S + 6 trả lời ngắn)</option>
+              <option value="bgd40" selected>Phiếu TLTN chuẩn Bộ GD&ĐT (SBD 8 số - Mã đề 4 số)</option>
+              <option value="qm2025">Phiếu QM 2025 - A4 (SBD 6 số - Mã đề 3 số)</option>
             </select>
           </div>
           <div class="form-row" style="margin-top: 8px;">
@@ -942,6 +952,8 @@
     </div>
   </div>
 
+  <div id="pro-modals"></div>
+
   <!-- THANH BOTTOM NAVIGATION BAR CỐ ĐỊNH Ở ĐÁY MÀN HÌNH ĐIỆN THOẠI -->
   <nav class="app-bottom-nav">
     <button class="nav-item active" data-tab="tab-camera">
@@ -956,6 +968,10 @@
       <div class="nav-icon">🔑</div>
       <div class="nav-label">Đáp Án</div>
     </button>
+    <button class="nav-item" data-tab="tab-results" id="nav-results">
+      <div class="nav-icon">📊</div>
+      <div class="nav-label">Kết Quả</div>
+    </button>
     <button class="nav-item" data-tab="tab-students">
       <div class="nav-icon">👨‍🎓</div>
       <div class="nav-label">Học Sinh</div>
@@ -967,7 +983,12 @@
   </nav>
 
   <!-- Script logic ứng dụng di động -->
+  <script src="vendor/jspdf.umd.min.js"></script>
+  <script src="vendor/qrcode.js"></script>
+  <script src="vendor/jsQR.js"></script>
   <script src="omr-engine.js"></script>
+  <script src="scoring.js"></script>
   <script src="app.js"></script>
+  <script src="pro.js"></script>
 </body>
 </html>

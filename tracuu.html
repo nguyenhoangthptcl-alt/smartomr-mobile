@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tra cứu kết quả bài thi</title>
+<style>
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;margin:0;background:#f1f5f9;color:#0f172a}
+  .wrap{max-width:520px;margin:0 auto;padding:16px}
+  .card{background:#fff;border-radius:16px;padding:20px;box-shadow:0 2px 12px rgba(15,23,42,.08)}
+  h1{font-size:18px;margin:0 0 4px}
+  .muted{color:#64748b;font-size:13px}
+  .score{font-size:64px;font-weight:800;color:#b91c1c;line-height:1;margin:14px 0 2px}
+  .score small{font-size:22px;color:#64748b;font-weight:600}
+  .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:14px 0}
+  .box{background:#f8fafc;border-radius:10px;padding:10px;text-align:center}
+  .box b{display:block;font-size:20px}
+  .row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #e2e8f0;font-size:14px}
+  .tag{display:inline-block;background:#fee2e2;color:#991b1b;border-radius:6px;padding:2px 8px;margin:2px;font-size:13px}
+  .ok{background:#dcfce7;color:#166534}
+  .err{color:#b91c1c;text-align:center;padding:30px 10px}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card" id="out"><div class="err">Đang tải…</div></div>
+<p class="muted" style="text-align:center;margin-top:12px">SmartOMR Pro · Kết quả được chấm tự động, nếu có thắc mắc hãy liên hệ giáo viên bộ môn.</p></div>
+<script>
+(function(){
+  var out=document.getElementById("out");
+  function esc(v){return String(v==null?"":v).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];});}
+  try{
+    var m=/[#&]d=([A-Za-z0-9_-]+)/.exec(location.hash); if(!m) throw new Error("no token");
+    var b=m[1].replace(/-/g,"+").replace(/_/g,"/"); while(b.length%4)b+="=";
+    var r=JSON.parse(decodeURIComponent(escape(atob(b))));
+    function tags(a,cls){return a&&a.length?a.map(function(x){return '<span class="tag">'+esc(x)+'</span>';}).join(""):'<span class="tag ok">Không có</span>';}
+    out.innerHTML='<h1>'+esc(r.e||"Kết quả bài thi")+'</h1><div class="muted">'+esc(r.d||"")+'</div>'
+     +'<div class="row"><span>Họ và tên</span><b>'+esc(r.n)+'</b></div><div class="row"><span>Lớp</span><b>'+esc(r.c)+'</b></div>'
+     +'<div class="row"><span>Số báo danh</span><b>'+esc(r.s)+'</b></div><div class="row"><span>Mã đề</span><b>'+esc(r.m)+'</b></div>'
+     +'<div class="score">'+esc(r.t)+'<small> / '+esc(r.x)+'</small></div>'
+     +'<div class="grid"><div class="box"><b>'+esc(r.p1)+'</b><span class="muted">câu P.I đúng</span></div><div class="box"><b>'+esc(r.p2)+'</b><span class="muted">ý P.II đúng</span></div><div class="box"><b>'+esc(r.p3)+'</b><span class="muted">câu P.III đúng</span></div></div>'
+     +'<div class="row"><span>Câu sai Phần I</span></div><div>'+tags((r.w1||[]).map(function(q){return "Câu "+q;}))+'</div>'
+     +'<div class="row"><span>Phần II chưa đủ 4 ý</span></div><div>'+tags((r.w2||[]).map(function(q){return "Câu "+q;}))+'</div>'
+     +'<div class="row"><span>Câu sai Phần III</span></div><div>'+tags((r.w3||[]).map(function(q){return "Câu "+q;}))+'</div>';
+  }catch(e){ out.innerHTML='<div class="err">Liên kết không hợp lệ hoặc đã bị cắt bớt.<br>Vui lòng xin lại liên kết từ giáo viên.</div>'; }
+})();
+</script>
+</body></html>

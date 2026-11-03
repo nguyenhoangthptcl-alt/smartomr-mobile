@@ -90,12 +90,96 @@
     currentUser: null
   };
 
-  // Lưu state vào LocalStorage
+  // ---- Bộ nhớ ảnh bài thi (IndexedDB) — lưu ảnh gốc làm minh chứng, không giới hạn như localStorage ----
+  const ImgStore = {
+    _db: null,
+    open() {
+      if (this._db) return Promise.resolve(this._db);
+      return new Promise((resolve) => {
+        try {
+          const req = indexedDB.open("smartomr_images", 1);
+          req.onupgradeneeded = () => req.result.createObjectStore("img");
+          req.onsuccess = () => { this._db = req.result; resolve(this._db); };
+          req.onerror = () => resolve(null);
+        } catch (e) { resolve(null); }
+      });
+    },
+    async put(id, dataUrl) {
+      const db = await this.open(); if (!db) return false;
+      return new Promise((res) => { const tx = db.transaction("img", "readwrite"); tx.objectStore("img").put(dataUrl, id); tx.oncomplete = () => res(true); tx.onerror = () => res(false); });
+    },
+    async get(id) {
+      const db = await this.open(); if (!db) return null;
+      return new Promise((res) => { const rq = db.transaction("img").objectStore("img").get(id); rq.onsuccess = () => res(rq.result || null); rq.onerror = () => res(null); });
+    },
+    async del(id) {
+      const db = await this.open(); if (!db) return false;
+      return new Promise((res) => { const tx = db.transaction("img", "readwrite"); tx.objectStore("img").delete(id); tx.oncomplete = () => res(true); tx.onerror = () => res(false); });
+    },
+    async clear() {
+      const db = await this.open(); if (!db) return false;
+      return new Promise((res) => { const tx = db.transaction("img", "readwrite"); tx.objectStore("img").clear(); tx.oncomplete = () => res(true); tx.onerror = () => res(false); });
+    }
+  };
+
+  // ---- Mô hình bài chấm: lưu ĐÁP ÁN ĐỌC ĐƯỢC (reads) để duyệt, sửa, tính lại điểm bất cứ lúc nào ----
+  function newId() { return Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
+
+  function keyFor(made) {
+    const found = SmartScoring.findKey(state.answerKeys, made);
+    if (found) return { key: found.key, madeKey: found.madeKey, matched: true };
+    const fb = state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_0101;
+    return { key: fb, madeKey: fb.made || state.activeMade, matched: false };
+  }
+
+  function applyScoring(sub) {
+    if (!sub.reads) return sub;
+    const k = keyFor(sub.made);
+    const res = SmartScoring.computeScore(sub.reads, k.key);
+    sub.keyMatched = k.matched;
+    sub.keyMade = k.madeKey;
+    sub.result = res;
+    sub.total_score = res.total_score;
+    sub.max_possible_score = res.max_possible_score;
+    sub.part1_summary = res.part1_summary;
+    sub.part2_summary = res.part2_summary;
+    sub.part3_summary = res.part3_summary;
+    const st = SmartScoring.findStudent(state.students, sub.sbd);
+    sub.student_name = st ? st.full_name : "Chưa khớp danh sách";
+    sub.student_class = st ? (st.class_name || "-") : "-";
+    sub.student_dob = st ? (st.dob || "") : "";
+    sub.issues = SmartScoring.collectIssues(sub, { keys: state.answerKeys, students: state.students, submissions: state.submissions });
+    sub.level = SmartScoring.worstLevel(sub.issues);
+    return sub;
+  }
+
+  function recalcAll() {
+    state.submissions.forEach((s) => { if (s.reads) applyScoring(s); });
+    if (window.SmartPro && window.SmartPro.onDataChanged) window.SmartPro.onDataChanged();
+  }
+
+  function serializeSubs() {
+    return state.submissions.map((s) => {
+      const c = Object.assign({}, s);
+      delete c.result; delete c.issues; delete c.level;
+      return c;
+    });
+  }
+
+  let lastDataSig = null;
+  function dataSignature() {
+    return JSON.stringify(state.answerKeys) + "|" + JSON.stringify(state.students.map((x) => [x.sbd, x.full_name, x.class_name]));
+  }
+
+  // Lưu state vào LocalStorage (đồng thời TỰ ĐỘNG TÍNH LẠI điểm khi đáp án / danh sách lớp thay đổi)
   function persistState() {
+    const sig = dataSignature();
+    if (lastDataSig !== null && sig !== lastDataSig) recalcAll();
+    lastDataSig = sig;
     localStorage.setItem("smartomr_session_name", state.sessionName);
     localStorage.setItem("smartomr_keys", JSON.stringify(state.answerKeys));
     localStorage.setItem("smartomr_students", JSON.stringify(state.students));
-    localStorage.setItem("smartomr_submissions", JSON.stringify(state.submissions));
+    try { localStorage.setItem("smartomr_submissions", JSON.stringify(serializeSubs())); } catch (e) { console.warn("Hết dung lượng localStorage", e); }
     localStorage.setItem("smartomr_gemini_key", state.geminiKey);
     localStorage.setItem("smartomr_gemini_model", state.geminiModel);
     localStorage.setItem("smartomr_auto_gemini", state.autoGemini ? "true" : "false");
@@ -105,7 +189,12 @@
     localStorage.setItem("smartomr_anchor_locked", state.cameraAnchorLock ? "true" : "false");
     localStorage.setItem("smartomr_a4_mode", state.cameraA4Mode);
     localStorage.setItem("smartomr_a4_scale", state.cameraA4Scale.toString());
+    if (window.SmartPro && window.SmartPro.onPersist) window.SmartPro.onPersist();
   }
+
+  // Khởi tạo lại điểm cho các bài đã lưu từ phiên trước
+  state.submissions.forEach((s) => { if (s.reads) applyScoring(s); });
+  lastDataSig = dataSignature();
 
   // Tiện ích tải file ảnh xuống thiết bị di động
   function downloadImageFile(dataUrl, filename) {
@@ -205,12 +294,17 @@
       renderBatchCards();
     } else if (tabId === "tab-keys") {
       renderKeysManager();
+      if (window.SmartPro) window.SmartPro.refreshKeyTools();
     } else if (tabId === "tab-students") {
       renderStudentsList();
       renderGradebook();
     } else if (tabId === "tab-settings") {
       renderSettingsTab();
+      if (window.SmartPro) window.SmartPro.refreshSyncCard();
+    } else if (tabId === "tab-results" && window.SmartPro) {
+      window.SmartPro.refresh();
     }
+    if (tabId !== "tab-camera" && window.SmartPro && window.SmartPro.stopAuto) window.SmartPro.stopAuto();
   }
 
   document.querySelectorAll(".nav-item").forEach((btn) => {
@@ -730,138 +824,120 @@
   // =========================================================================
   // 5. LÕI GỬI YÊU CẦU CHẤM BÀI (HỖ TRỢ BACKEND + GEMINI AI DIRECT)
   // =========================================================================
-  async function processGradingRequest({ base64Data, rawBase64, manualCorners, templateId, useGemini, sourceName, isCameraCapture }) {
+  function flagText(f) {
+    const where = f.part === "I" ? `Câu ${f.q}` : f.part === "II" ? `Câu II.${f.q}${f.sub || ""}` : f.part === "III" ? `Câu III.${f.q}` : `${f.part} cột ${f.pos}`;
+    const what = { multi: "tô nhiều ô", blank: "để trống", faint: "tô mờ", smudge: "có vết tẩy" }[f.type] || f.type;
+    return `${where}: ${what}`;
+  }
+
+  // Tạo bài chấm mới từ đáp án đọc được
+  function buildSubmission({ reads, sbd, made, flags, template, method, name }) {
+    const sub = {
+      id: newId(), name: name || `Phiếu_${state.submissions.length + 1}`, ts: Date.now(),
+      timestamp: new Date().toLocaleString("vi-VN"),
+      template: template || "", method: method || "", sbd: sbd || "", made: made || "",
+      reads: reads, flags: flags || [], edited: false
+    };
+    return applyScoring(sub);
+  }
+
+  function gradeLegacyRecord(res, name) {
+    // Kết quả từ máy chủ PC (định dạng cũ, không có đáp án đọc)
+    return Object.assign({ id: res.id || newId(), name: name, ts: Date.now(), timestamp: new Date().toLocaleString("vi-VN"), flags: [], issues: [], level: "ok", method: "Máy chủ PC" }, res);
+  }
+
+  async function processGradingRequest({ base64Data, rawBase64, manualCorners, templateId, useGemini, sourceName, isCameraCapture, silent }) {
     const activeKey = state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_0101;
     const scoringCfg = activeKey.scoring_config || DEFAULT_STRUCTURE;
+    const forcedTemplate = window.SmartOMREngine && window.SmartOMREngine.LAYOUTS[templateId] ? templateId : "auto";
 
-    let gradeResult = null;
+    let sub = null;
     let gradedImage = null;
     let originalImage = rawBase64 || base64Data;
+    let localFail = "";
 
-    const payload = {
-      image_base64: base64Data,
-      template_id: templateId,
-      override_made: state.activeMade,
-      save_to_history: true,
-      use_gemini_ai: Boolean(useGemini && state.geminiKey),
-      gemini_api_key: state.geminiKey,
-      gemini_model: state.geminiModel,
-      scoring_config: scoringCfg,
-      manual_corners: manualCorners
-    };
-
-    // Ưu tiên 1: Gửi tới Backend FastAPI (nếu đang chạy localhost hoặc LAN Wi-Fi PC)
-    try {
-      const serverEndpoint = (state.pcBaseUrl ? state.pcBaseUrl.replace(/\/$/, "") : "") + "/api/grade-base64";
-      const resp = await fetch(serverEndpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-      });
-      if (resp.ok) {
-        const data = await resp.json();
-        gradeResult = data.result;
-        gradedImage = data.graded_image;
-        originalImage = data.original_image || base64Data;
+    // Ưu tiên 1 (tuỳ chọn): máy chủ PC — chỉ khi đã cấu hình địa chỉ máy chủ
+    if (state.pcBaseUrl) {
+      try {
+        const payload = { image_base64: base64Data, template_id: templateId, override_made: state.activeMade, save_to_history: true, use_gemini_ai: Boolean(useGemini && state.geminiKey), gemini_api_key: state.geminiKey, gemini_model: state.geminiModel, scoring_config: scoringCfg, manual_corners: manualCorners };
+        const resp = await fetch(state.pcBaseUrl.replace(/\/$/, "") + "/api/grade-base64", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        if (resp.ok) {
+          const data = await resp.json();
+          sub = gradeLegacyRecord(data.result, sourceName);
+          gradedImage = data.graded_image;
+          originalImage = data.original_image || base64Data;
+        }
+      } catch (err) {
+        console.log("[Grade] Không kết nối được máy chủ PC, dùng bộ nhận diện trên thiết bị...");
       }
-    } catch (err) {
-      console.log("[Grade] Không kết nối được Backend FastAPI, thử chế độ độc lập/Gemini AI trực tiếp...");
     }
 
-    // Ưu tiên 2: Bộ nhận diện nội bộ theo mẫu phiếu chuẩn (chạy ngay trên máy, không cần mạng)
-    let localFail = "";
-    if (!gradeResult) {
-      const local = await readSheetLocally([base64Data, rawBase64]);
+    // Ưu tiên 2: Bộ nhận diện nội bộ (offline, trên thiết bị)
+    if (!sub) {
+      const local = await readSheetLocally([base64Data, rawBase64], { template: forcedTemplate });
       if (local.ok) {
-        const aiJson = Object.assign({}, local.data, {
-          _method: `OMR nội bộ — 4 ô định vị${local.markers.extra ? " + " + local.markers.extra + " ô phụ" : ""}`,
-          _warnings: local.flags.map((f) => `Phần ${f.part}${f.q ? " câu " + f.q : ""}${f.sub ? f.sub : ""}${f.pos ? " cột " + f.pos : ""}: ${f.type === "multi" ? "tô nhiều ô" : "để trống"}`)
+        const extra = local.markers.extra ? ` + ${local.markers.extra} ô phụ` : "";
+        sub = buildSubmission({
+          reads: { part1: local.data.part1, part2: local.data.part2, part3: local.data.part3 },
+          sbd: local.data.sbd, made: local.data.made, flags: local.flags, template: local.template,
+          method: `OMR trên thiết bị — ${local.templateName} (4 góc${extra})`, name: sourceName
         });
-        const scored = scoreFromAiRead(aiJson, templateId, scoringCfg);
-        gradeResult = scored.result;
-        gradeResult.flags = local.flags;
-        try {
-          const usedKey = (findAnswerKey(gradeResult.made) || {}).key || activeKey;
-          gradedImage = drawGradedOverlay(local, usedKey, scoringCfg);
-        } catch (ovErr) {
-          console.warn("[Overlay]", ovErr);
-          gradedImage = base64Data;
-        }
+        const jpeg = local.canvas.toDataURL("image/jpeg", 0.82);
+        sub.H = local.H; sub.imgW = local.canvas.width; sub.imgH = local.canvas.height; sub.hasImage = true;
+        await ImgStore.put(sub.id, jpeg);
+        try { gradedImage = drawOverlay(sub, local.canvas); } catch (ovErr) { console.warn("[Overlay]", ovErr); gradedImage = jpeg; }
+        originalImage = jpeg;
       } else {
         localFail = local.reason;
       }
     }
 
-    // Ưu tiên 3: Nếu phiếu mờ/không bắt được định vị và có Gemini Key -> nhờ Gemini Vision đọc
-    if (!gradeResult && state.geminiKey) {
+    // Ưu tiên 3: Gemini Vision (chỉ khi phiếu mờ/không bắt được định vị và có API key)
+    if (!sub && state.geminiKey) {
       try {
-        const geminiRes = await callGeminiVisionDirect(base64Data, templateId, scoringCfg);
-        gradeResult = geminiRes.result;
-        gradedImage = geminiRes.graded_image || base64Data;
+        const ai = await callGeminiVisionDirect(base64Data, templateId, scoringCfg);
+        const reads = { part1: ai.part1 || {}, part2: ai.part2 || {}, part3: ai.part3 || {} };
+        sub = buildSubmission({ reads: reads, sbd: String(ai.sbd || ""), made: String(ai.made || ""), flags: [], template: "gemini", method: "Gemini Vision AI", name: sourceName });
+        sub.hasImage = true;
+        await ImgStore.put(sub.id, base64Data);
+        gradedImage = base64Data;
       } catch (gemErr) {
         console.warn("[Gemini Direct Error]:", gemErr);
       }
     }
 
     // Không đọc được: báo lỗi rõ ràng, KHÔNG chấm điểm giả
-    if (!gradeResult) {
+    if (!sub) {
       const msg = localFail || "Không đọc được phiếu.";
-      if (isCameraCapture) alert("⚠️ Không chấm được phiếu này.\n\n" + msg);
+      if (isCameraCapture && !silent) alert("⚠️ Không chấm được phiếu này.\n\n" + msg);
       console.warn("[Grade] Thất bại:", sourceName, msg);
       return { error: msg, name: sourceName };
     }
 
-    // Khớp danh sách học sinh theo SBD
-    const normSbd = (v) => String(v || "").trim().replace(/^0+/, "");
-    const matchedSt = state.students.find((s) => s.sbd === gradeResult.sbd || (normSbd(s.sbd) && normSbd(s.sbd) === normSbd(gradeResult.sbd)));
-    if (matchedSt) {
-      gradeResult.student_name = matchedSt.full_name;
-      gradeResult.student_class = matchedSt.class_name;
-    } else {
-      gradeResult.student_name = gradeResult.student_name || "Chưa khớp danh sách";
-      gradeResult.student_class = gradeResult.student_class || "-";
-    }
-
-    // Lưu vào danh sách lô và submissions
     const batchItem = {
-      id: gradeResult.id || Date.now().toString(),
-      name: sourceName || `Phiếu_${state.batchItems.length + 1}`,
-      result: gradeResult,
+      id: sub.id,
+      name: sub.name,
+      result: sub,
       graded_bgr: gradedImage,
       orig_bgr: originalImage,
       timestamp: new Date().toLocaleTimeString("vi-VN")
     };
 
     state.batchItems.unshift(batchItem);
-    state.submissions.unshift({
-      id: batchItem.id,
-      sbd: gradeResult.sbd,
-      made: gradeResult.made,
-      student_name: gradeResult.student_name,
-      student_class: gradeResult.student_class,
-      total_score: gradeResult.total_score,
-      part1_summary: gradeResult.part1_summary,
-      part2_summary: gradeResult.part2_summary,
-      part3_summary: gradeResult.part3_summary,
-      timestamp: new Date().toLocaleString("vi-VN")
-    });
+    state.submissions.unshift(sub);
     persistState();
 
     if (isCameraCapture) {
       displayCameraResultSheet(batchItem);
-      // Tự động tải ảnh chấm về máy điện thoại nếu bật tùy chọn
       const autoDlCheckbox = document.getElementById("chk-auto-download-cam");
       const shouldAutoDl = autoDlCheckbox ? autoDlCheckbox.checked : state.autoDownloadGradedCam;
-      if (shouldAutoDl) {
+      if (shouldAutoDl && !silent) {
         setTimeout(() => {
-          downloadImageFile(
-            batchItem.graded_bgr || batchItem.orig_bgr,
-            `Phieu_Cham_SBD_${gradeResult.sbd}_Made_${gradeResult.made}_${gradeResult.total_score}d.jpg`
-          );
+          downloadImageFile(batchItem.graded_bgr || batchItem.orig_bgr, `Phieu_Cham_SBD_${sub.sbd}_Made_${sub.made}_${sub.total_score}d.jpg`);
         }, 300);
       }
     }
-
+    if (window.SmartPro && window.SmartPro.onNewSubmission) window.SmartPro.onNewSubmission(sub);
     return batchItem;
   }
 
@@ -887,6 +963,11 @@
     document.getElementById("cam-chip-p2").textContent = p2.enabled ? `P.II: ${p2.total_sub_correct || 0} ý (${(p2.score || 0).toFixed(2)}đ)` : "P.II: Tắt";
     document.getElementById("cam-chip-p3").textContent = p3.enabled ? `P.III: ${p3.correct || 0} câu (${(p3.score || 0).toFixed(2)}đ)` : "P.III: Tắt";
 
+    const alignEl = document.getElementById("cam-res-align");
+    if (alignEl) {
+      const errs = (res.issues || []).filter((i) => i.level !== "info");
+      alignEl.textContent = (errs.length ? "⚠️ " + errs.map((i) => i.text).slice(0, 2).join(" · ") : "✅ " + (res.method || "Đã nhận diện"));
+    }
     sheet.style.display = "block";
   }
 
@@ -921,7 +1002,7 @@
   }
 
   // Thử đọc phiếu bằng bộ nhận diện nội bộ trên lần lượt các ảnh (ảnh đã nắn, ảnh gốc)
-  async function readSheetLocally(dataUrls) {
+  async function readSheetLocally(dataUrls, opts) {
     if (!window.SmartOMREngine) return { ok: false, reason: "Chưa tải được bộ nhận diện (omr-engine.js)." };
     let lastReason = "";
     for (const url of dataUrls) {
@@ -929,7 +1010,7 @@
       try {
         const canvas = await loadImageToCanvas(url, 1800);
         const ctx = canvas.getContext("2d");
-        const res = window.SmartOMREngine.readFromImageData(ctx.getImageData(0, 0, canvas.width, canvas.height));
+        const res = window.SmartOMREngine.readFromImageData(ctx.getImageData(0, 0, canvas.width, canvas.height), opts);
         if (res.ok) { res.canvas = canvas; return res; }
         lastReason = res.reason;
       } catch (e) {
@@ -939,57 +1020,93 @@
     return { ok: false, reason: lastReason || "Không đọc được ảnh phiếu." };
   }
 
-  // Vẽ kết quả chấm lên ảnh: xanh = đúng, đỏ = sai (kèm khoanh đáp án đúng cho Phần I)
-  function drawGradedOverlay(readRes, key, scoringCfg) {
-    const { canvas, H, data } = readRes;
-    const out = document.createElement("canvas");
-    out.width = canvas.width; out.height = canvas.height;
-    const ctx = out.getContext("2d");
-    ctx.drawImage(canvas, 0, 0);
+  // Vẽ kết quả chấm lên ảnh (minh chứng): xanh = đúng, đỏ = sai, khoanh xanh = đáp án đúng, cam = cần xem lại
+  function drawOverlay(sub, srcCanvas, opts) {
+    opts = opts || {};
     const E = window.SmartOMREngine;
+    const LY = E.LAYOUTS[sub.template];
+    const out = document.createElement("canvas");
+    out.width = srcCanvas.width; out.height = srcCanvas.height;
+    const ctx = out.getContext("2d");
+    ctx.drawImage(srcCanvas, 0, 0);
+    if (!LY || !sub.H) return opts.asCanvas ? out : out.toDataURL("image/jpeg", 0.88);
+    const H = sub.H;
     const groups = {};
-    E.LAYOUT.groups.forEach((g) => { groups[g.id] = g; });
-    const circle = (id, i, color, fill) => {
-      const g = groups[id]; if (!g || !g.pts[i]) return;
+    LY.groups.forEach((g) => { groups[g.id] = g; });
+    const det = (sub.result && sub.result.detail) || { p1: {}, p2: {}, p3: {} };
+    const pos = (id, i) => {
+      const g = groups[id]; if (!g || !g.pts[i]) return null;
       const p = g.pts[i]; const c = E.project(H, p[0], p[1]);
-      const r = E.LAYOUT.r * E.pxPerPt(H, p[0], p[1]);
-      ctx.beginPath(); ctx.arc(c[0], c[1], r * (fill ? 0.95 : 1.25), 0, Math.PI * 2);
-      if (fill) { ctx.fillStyle = color; ctx.globalAlpha = 0.45; ctx.fill(); ctx.globalAlpha = 1; }
-      ctx.lineWidth = Math.max(1.5, r * 0.28); ctx.strokeStyle = color; ctx.stroke();
+      return { x: c[0], y: c[1], r: (g.r || LY.r) * E.pxPerPt(H, p[0], p[1]) };
     };
-    const GREEN = "#16a34a", RED = "#dc2626";
-    const keyP1 = key.part1 || {}, keyP2 = key.part2 || {}, keyP3 = key.part3 || {};
-    if (scoringCfg.enable_part1) {
-      for (let q = 1; q <= scoringCfg.part1_count; q++) {
-        const ans = data.part1[q], ok = String(keyP1[q] || "").toUpperCase();
-        const ai = "ABCD".indexOf(ans), ki = "ABCD".indexOf(ok);
-        if (ans && ai === ki) circle("p1." + q, ai, GREEN, true);
-        else { if (ans) circle("p1." + q, ai, RED, true); if (ki >= 0) circle("p1." + q, ki, GREEN, false); }
+    const ring = (id, i, color, fill, scale) => {
+      const c = pos(id, i); if (!c) return;
+      ctx.beginPath(); ctx.arc(c.x, c.y, c.r * (scale || (fill ? 0.95 : 1.3)), 0, Math.PI * 2);
+      if (fill) { ctx.fillStyle = color; ctx.globalAlpha = 0.42; ctx.fill(); ctx.globalAlpha = 1; }
+      ctx.lineWidth = Math.max(1.5, c.r * 0.28); ctx.strokeStyle = color; ctx.stroke();
+    };
+    const GREEN = "#16a34a", RED = "#dc2626", BLUE = "#2563eb", ORANGE = "#f59e0b", GRAY = "#6b7280";
+    const reads = sub.reads || {};
+    const cfg = (keyFor(sub.made).key.scoring_config) || {};
+    const idx4 = { A: 0, B: 1, C: 2, D: 3 };
+
+    // SBD & mã đề đã đọc (xanh dương)
+    String(sub.sbd || "").split("").forEach((ch, i) => { if (/\d/.test(ch)) ring("sbd." + i, +ch, BLUE, true); });
+    String(sub.made || "").split("").forEach((ch, i) => { if (/\d/.test(ch)) ring("made." + i, +ch, BLUE, true); });
+
+    for (let q = 1; q <= (cfg.enable_part1 === false ? 0 : (cfg.part1_count == null ? 40 : cfg.part1_count)); q++) {
+      const d = det.p1[q]; if (!d) continue;
+      if (d.status === "void") continue;
+      const ai = idx4[d.ans];
+      if (d.status === "free") { if (ai !== undefined) ring("p1." + q, ai, GREEN, true); continue; }
+      if (ai !== undefined && d.correct) ring("p1." + q, ai, GREEN, true);
+      else { if (ai !== undefined) ring("p1." + q, ai, RED, true); if (idx4[d.key] !== undefined) ring("p1." + q, idx4[d.key], GREEN, false); }
+    }
+    for (let q = 1; q <= (cfg.enable_part2 === false ? 0 : (cfg.part2_count == null ? 8 : cfg.part2_count)); q++) {
+      const d = det.p2[q]; if (!d || d.status === "void") continue;
+      ["a", "b", "c", "d"].forEach((k) => {
+        const a = String((reads.part2 && reads.part2[q] && reads.part2[q][k]) || "");
+        if (!a) return;
+        ring("p2." + q + "." + k, a === "Đ" ? 0 : 1, d.subs[k] ? GREEN : RED, true);
+      });
+    }
+    for (let q = 1; q <= (cfg.enable_part3 === false ? 0 : (cfg.part3_count == null ? 6 : cfg.part3_count)); q++) {
+      const d = det.p3[q]; if (!d || d.status === "void") continue;
+      const ans = String((reads.part3 && reads.part3[q]) || "");
+      const color = d.correct ? GREEN : RED;
+      for (let c = 0; c < ans.length && c < 4; c++) {
+        const ch = ans[c];
+        if (ch === "-") ring("p3." + q + ".minus", 0, color, true);
+        else if (ch === ",") ring("p3." + q + ".comma", c - 1, color, true);
+        else ring("p3." + q + ".c" + c, parseInt(ch, 10), color, true);
       }
     }
-    if (scoringCfg.enable_part2) {
-      for (let q = 1; q <= scoringCfg.part2_count; q++) {
-        ["a", "b", "c", "d"].forEach((k) => {
-          const ans = data.part2[q][k]; if (!ans) return;
-          const okv = String((keyP2[q] || {})[k] || "").toUpperCase();
-          circle("p2." + q + "." + k, ans === "Đ" ? 0 : 1, ans.toUpperCase() === okv ? GREEN : RED, true);
-        });
-      }
+    // Đánh dấu ô cần xem lại (cam)
+    if (opts.showFlags) {
+      (sub.flags || []).forEach((f) => {
+        let id = null;
+        if (f.part === "I") id = "p1." + f.q;
+        else if (f.part === "II") id = "p2." + f.q + "." + f.sub;
+        else if (f.part === "SBD") id = "sbd." + (f.pos - 1);
+        else if (f.part === "Mã đề") id = "made." + (f.pos - 1);
+        const g = id && groups[id];
+        if (g) g.pts.forEach((_, i) => ring(id, i, ORANGE, false, 1.5));
+      });
     }
-    if (scoringCfg.enable_part3) {
-      for (let q = 1; q <= scoringCfg.part3_count; q++) {
-        const ans = String(data.part3[q] || "");
-        const good = ans && ans.replace(".", ",") === String(keyP3[q] || "").trim().replace(".", ",");
-        const color = good ? GREEN : RED;
-        for (let c = 0; c < ans.length && c < 4; c++) {
-          const ch = ans[c];
-          if (ch === "-") circle("p3." + q + ".minus", 0, color, true);
-          else if (ch === ",") circle("p3." + q + ".comma", c - 1, color, true);
-          else circle("p3." + q + ".c" + c, parseInt(ch, 10), color, true);
-        }
-      }
+    if (opts.highlight) opts.highlight.forEach((h) => ring(h.id, h.i, ORANGE, false, 1.7));
+
+    // Dải thông tin minh chứng
+    if (!opts.noBanner) {
+      const bh = Math.max(34, Math.round(out.height * 0.032));
+      ctx.fillStyle = "rgba(15,23,42,0.82)";
+      ctx.fillRect(0, out.height - bh, out.width, bh);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${Math.round(bh * 0.5)}px sans-serif`;
+      ctx.textBaseline = "middle";
+      const txt = `${sub.student_name || ""} | SBD ${sub.sbd} | Đề ${sub.made} | ${sub.total_score}/${sub.max_possible_score} điểm | P.I ${sub.part1_summary.correct}/${sub.part1_summary.total_questions} · P.II ${sub.part2_summary.total_sub_correct} ý · P.III ${sub.part3_summary.correct}`;
+      ctx.fillText(txt, 12, out.height - bh / 2);
     }
-    return out.toDataURL("image/jpeg", 0.9);
+    return opts.asCanvas ? out : out.toDataURL("image/jpeg", 0.9);
   }
 
   // =========================================================================
@@ -1053,124 +1170,13 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
           const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
           const aiJson = JSON.parse(rawText.replace(/^```json/, "").replace(/```$/, "").trim());
 
-          // Chấm điểm dựa trên đáp án chuẩn
-          return scoreFromAiRead(aiJson, templateId, scoringCfg);
+          return aiJson;
         }
       } catch (e) {
         continue;
       }
     }
     throw new Error("Không thể gọi Gemini AI với danh sách mô hình hiện tại.");
-  }
-
-  function scoreFromAiRead(aiJson, templateId, scoringCfg) {
-    const sbd = String(aiJson.sbd || "").padStart(8, "0").slice(0, 8);
-    const madeRaw = String(aiJson.made || "").trim();
-    const foundKey = findAnswerKey(madeRaw);
-    const made = foundKey ? foundKey.madeKey : (madeRaw || state.activeMade);
-    const key = foundKey ? foundKey.key : (state.answerKeys[state.activeMade] || Object.values(state.answerKeys)[0] || DEFAULT_KEY_0101);
-    const keyWarning = foundKey ? "" : `Mã đề "${madeRaw || "?"}" chưa có đáp án — đang chấm theo mã đề ${state.activeMade}`;
-
-    let p1Score = 0.0, p1Correct = 0;
-    const p1Count = scoringCfg.enable_part1 ? scoringCfg.part1_count : 0;
-    const p1Pts = scoringCfg.part1_points_each || 0.25;
-    const aiP1 = aiJson.part1 || {};
-    const keyP1 = key.part1 || {};
-
-    for (let q = 1; q <= p1Count; q++) {
-      if (String(aiP1[q] || "").trim().toUpperCase() === String(keyP1[q] || "").trim().toUpperCase()) {
-        p1Correct++;
-        p1Score += p1Pts;
-      }
-    }
-
-    let p2Score = 0.0, p2SubCorrect = 0;
-    const p2Count = scoringCfg.enable_part2 ? scoringCfg.part2_count : 0;
-    const p2Max = scoringCfg.part2_max_points_each || 1.0;
-    const p2Rule = { 1: 0.1 * p2Max, 2: 0.25 * p2Max, 3: 0.5 * p2Max, 4: 1.0 * p2Max };
-    const aiP2 = aiJson.part2 || {};
-    const keyP2 = key.part2 || {};
-
-    for (let q = 1; q <= p2Count; q++) {
-      let subC = 0;
-      const qKey = keyP2[q] || { a: "Đ", b: "S", c: "Đ", d: "S" };
-      const qAi = aiP2[q] || {};
-      ["a", "b", "c", "d"].forEach((k) => {
-        if (String(qAi[k] || "").trim().toUpperCase() === String(qKey[k] || "").trim().toUpperCase()) {
-          subC++;
-          p2SubCorrect++;
-        }
-      });
-      p2Score += p2Rule[subC] || 0.0;
-    }
-
-    let p3Score = 0.0, p3Correct = 0;
-    const p3Count = scoringCfg.enable_part3 ? scoringCfg.part3_count : 0;
-    const p3Pts = scoringCfg.part3_points_each || 0.25;
-    const aiP3 = aiJson.part3 || {};
-    const keyP3 = key.part3 || {};
-
-    for (let q = 1; q <= p3Count; q++) {
-      const stVal = String(aiP3[q] || "").trim().replace(".", ",");
-      const kVal = String(keyP3[q] || "").trim().replace(".", ",");
-      if (stVal && stVal === kVal) {
-        p3Correct++;
-        p3Score += p3Pts;
-      }
-    }
-
-    const totalScore = Math.round((p1Score + p2Score + p3Score) * 100) / 100;
-    const maxScore = Math.round(((p1Count * p1Pts) + (p2Count * p2Max) + (p3Count * p3Pts)) * 100) / 100;
-
-    return {
-      result: {
-        id: Math.random().toString(36).substring(2, 9),
-        template_id: templateId,
-        sbd: sbd,
-        made: made,
-        total_score: totalScore,
-        max_possible_score: maxScore,
-        part1_summary: { enabled: scoringCfg.enable_part1, total_questions: p1Count, correct: p1Correct, score: p1Score },
-        part2_summary: { enabled: scoringCfg.enable_part2, total_questions: p2Count, total_sub_correct: p2SubCorrect, score: p2Score },
-        part3_summary: { enabled: scoringCfg.enable_part3, total_questions: p3Count, correct: p3Correct, score: p3Score },
-        alignment: { alignment_method: aiJson._method || "Gemini Vision AI (Trực tiếp)", warnings: (aiJson._warnings || []).concat(keyWarning ? [keyWarning] : []) }
-      }
-    };
-  }
-
-  function mockOfflineGrade(base64Image, templateId, scoringCfg) {
-    const randSt = state.students[Math.floor(Math.random() * state.students.length)] || DEFAULT_STUDENTS[0];
-    const p1Count = scoringCfg.enable_part1 ? scoringCfg.part1_count : 40;
-    const p1Pts = scoringCfg.part1_points_each || 0.25;
-    const p1Correct = Math.max(15, Math.floor(p1Count * (0.75 + Math.random() * 0.2)));
-    const p1Score = Math.round(p1Correct * p1Pts * 100) / 100;
-
-    const p2Count = scoringCfg.enable_part2 ? scoringCfg.part2_count : 8;
-    const p2Max = scoringCfg.part2_max_points_each || 1.0;
-    const p2Score = Math.min(p2Count * p2Max, Math.round((p2Count * 0.65 * p2Max) * 100) / 100);
-
-    const p3Count = scoringCfg.enable_part3 ? scoringCfg.part3_count : 6;
-    const p3Pts = scoringCfg.part3_points_each || 0.25;
-    const p3Correct = Math.max(2, Math.floor(p3Count * (0.5 + Math.random() * 0.3)));
-    const p3Score = Math.round(p3Correct * p3Pts * 100) / 100;
-
-    const total = Math.min(10.0, Math.round((p1Score + p2Score + p3Score) * 100) / 100);
-    const maxScore = Math.round(((p1Count * p1Pts) + (p2Count * p2Max) + (p3Count * p3Pts)) * 100) / 100;
-
-    return {
-      id: Math.random().toString(36).substring(2, 9),
-      template_id: templateId,
-      sbd: randSt.sbd,
-      made: state.activeMade || "0101",
-      total_score: total,
-      max_possible_score: maxScore,
-      student_name: randSt.full_name,
-      student_class: randSt.class_name,
-      part1_summary: { enabled: scoringCfg.enable_part1, total_questions: p1Count, correct: p1Correct, score: p1Score },
-      part2_summary: { enabled: scoringCfg.enable_part2, total_questions: p2Count, total_sub_correct: Math.min(p2Count * 4, p2Count * 3), score: p2Score },
-      part3_summary: { enabled: scoringCfg.enable_part3, total_questions: p3Count, correct: p3Correct, score: p3Score },
-      alignment: { alignment_method: "Tự động bắt 4 góc định vị (Chuẩn Bộ GD&ĐT)" }
-    };
   }
 
   // =========================================================================
@@ -1379,7 +1385,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
           <div class="item-left">
             <div class="item-num">#${state.batchItems.length - idx}</div>
             <div>
-              <div class="item-st-title">${res.student_name}</div>
+              <div class="item-st-title">${res.level === "error" ? "🔴" : res.level === "warn" ? "🟠" : "🟢"} ${res.student_name}</div>
               <div class="item-st-details">SBD: <strong>${res.sbd}</strong> | Đề: <strong>${res.made}</strong> | ${res.student_class} | ${item.timestamp}</div>
             </div>
           </div>
@@ -1409,7 +1415,9 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     container.querySelectorAll(".batch-card-item").forEach((card) => {
       card.addEventListener("click", () => {
         const idx = parseInt(card.dataset.idx, 10);
-        openImageViewer(state.batchItems[idx]);
+        const it = state.batchItems[idx];
+        if (window.SmartPro && it && it.result && it.result.reads) window.SmartPro.openReview(it.result.id);
+        else openImageViewer(it);
       });
     });
   }
@@ -1746,6 +1754,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
   // Xuất bảng điểm Excel
   function exportGradebookExcel() {
+    if (window.SmartPro && window.SmartPro.exportExcel) return window.SmartPro.exportExcel();
     if (!window.XLSX) return;
     if (state.submissions.length === 0) {
       alert("Chưa có kết quả bài chấm nào để xuất file Excel!");
@@ -2546,27 +2555,8 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     });
     document.getElementById("btn-export-excel-batch")?.addEventListener("click", exportGradebookExcel);
     document.getElementById("btn-generate-sim-batch")?.addEventListener("click", async () => {
-      const progCard = document.getElementById("batch-progress-card");
-      if (progCard) progCard.style.display = "block";
-      for (let i = 0; i < 4; i++) {
-        const randSt = state.students[i % state.students.length] || DEFAULT_STUDENTS[0];
-        const res = mockOfflineGrade("", "thpt_2025", DEFAULT_STRUCTURE);
-        res.sbd = randSt.sbd;
-        res.made = "0101";
-        res.student_name = randSt.full_name;
-        res.student_class = randSt.class_name;
-        state.batchItems.unshift({
-          id: res.id,
-          name: `Phiếu_Mẫu_${i + 1}_SBD_${randSt.sbd}`,
-          result: res,
-          graded_bgr: null,
-          orig_bgr: null,
-          timestamp: new Date().toLocaleTimeString("vi-VN")
-        });
-      }
-      persistState();
-      renderBatchCards();
-      if (progCard) progCard.style.display = "none";
+      if (window.SmartPro && window.SmartPro.runDemo) await window.SmartPro.runDemo();
+      else alert("Chưa tải được mô-đun chấm thử.");
     });
 
     // Keys & Structure Tab
@@ -2576,7 +2566,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
 
     document.getElementById("btn-save-structure")?.addEventListener("click", () => {
       const curKey = state.answerKeys[state.activeMade] || DEFAULT_KEY_0101;
-      curKey.scoring_config = {
+      curKey.scoring_config = Object.assign({}, curKey.scoring_config, {
         enable_part1: document.getElementById("cfg-p1-enable").checked,
         part1_count: parseInt(document.getElementById("cfg-p1-count").value, 10) || 40,
         part1_points_each: parseFloat(document.getElementById("cfg-p1-pts").value) || 0.25,
@@ -2586,7 +2576,7 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
         enable_part3: document.getElementById("cfg-p3-enable").checked,
         part3_count: parseInt(document.getElementById("cfg-p3-count").value, 10) || 6,
         part3_points_each: parseFloat(document.getElementById("cfg-p3-pts").value) || 0.25
-      };
+      });
       persistState();
       renderKeysManager();
       alert("Đã lưu cấu hình loại hình trắc nghiệm & số câu hỏi thành công!");
@@ -2683,4 +2673,10 @@ Trả về DUY NHẤT một chuỗi JSON hợp lệ dạng:
     switchTab("tab-camera");
   });
 
+  window.SmartApp = {
+    state, persistState, applyScoring, recalcAll, keyFor, flagText, drawOverlay, ImgStore, newId,
+    processGradingRequest, buildSubmission, readSheetLocally, loadImageToCanvas, downloadImageFile,
+    renderBatchCards, renderGradebook, renderKeysManager, renderSettingsTab, switchTab, updateScoreSummaryBanner,
+    DEFAULT_STRUCTURE
+  };
 })();

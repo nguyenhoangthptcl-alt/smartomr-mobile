@@ -1650,3 +1650,58 @@ body {
   margin-top: 2px;
 }
 
+
+/* ===================== SmartOMR Pro v3: duyệt bài, thống kê, công cụ ===================== */
+.seg-tabs{display:flex;gap:6px;margin-bottom:12px;background:#e2e8f0;padding:4px;border-radius:12px}
+.seg-btn{flex:1;border:0;background:transparent;padding:9px 4px;border-radius:9px;font-weight:600;font-size:13px;color:#475569;cursor:pointer}
+.seg-btn.active{background:#fff;color:#1d4ed8;box-shadow:0 1px 4px rgba(15,23,42,.15)}
+.rv-badges{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+.rv-pill{font-size:12px;font-weight:700;padding:4px 10px;border-radius:999px;background:#f1f5f9}
+.rv-pill.lv-error{background:#fee2e2;color:#991b1b}.rv-pill.lv-warn{background:#ffedd5;color:#9a3412}.rv-pill.lv-ok{background:#dcfce7;color:#166534}
+.rv-filters{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:6px;margin:8px 0}
+.rv-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.rv-list{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.rv-row{display:flex;align-items:center;gap:8px;padding:10px;border-radius:12px;background:#fff;border:1px solid #e2e8f0;border-left:5px solid #16a34a;cursor:pointer}
+.rv-row.lv-error{border-left-color:#dc2626;background:#fff7f7}.rv-row.lv-warn{border-left-color:#f59e0b;background:#fffbf2}
+.rv-main{flex:1;min-width:0}.rv-name{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rv-meta{font-size:12px;color:#64748b}.rv-issue{font-size:12px;margin-top:2px}.rv-issue.error{color:#b91c1c}.rv-issue.warn{color:#b45309}
+.rv-score{font-weight:800;font-size:20px;color:#1d4ed8;text-align:right}.rv-score small{font-size:12px;color:#64748b}
+.pro-full{align-items:stretch!important;justify-content:stretch!important;padding:0!important;z-index:9500}
+.review-box{background:#fff;display:flex;flex-direction:column;width:100%;height:100%}
+.review-top{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #e2e8f0}
+.rv-top-info{flex:1;min-width:0}.rv-title{font-weight:700;font-size:15px}.rv-method{font-size:11px;color:#64748b}
+.rv-bigscore{font-size:30px;font-weight:800;color:#b91c1c}.rv-bigscore small{font-size:13px;color:#64748b}
+.review-body{flex:1;display:flex;min-height:0}
+.review-left{flex:1.1;display:flex;flex-direction:column;background:#0f172a;min-width:0}
+.rv-imgwrap{flex:1;overflow:auto;display:flex;align-items:flex-start;justify-content:center;padding:6px}
+#rv-canvas{max-width:100%;height:auto;cursor:crosshair;touch-action:manipulation}
+.rv-noimg{color:#cbd5e1;padding:30px;text-align:center}.rv-hint{color:#cbd5e1;font-size:11px;padding:6px 10px;text-align:center}
+.review-right{flex:1;overflow:auto;padding:10px 12px}
+.review-bottom{display:flex;gap:6px;align-items:center;padding:8px 12px;border-top:1px solid #e2e8f0;flex-wrap:wrap}
+@media(max-width:820px){.review-body{flex-direction:column}.review-left{flex:none;height:42%}.review-right{flex:1}}
+.rp-ids{display:flex;gap:10px;flex-wrap:wrap}.rp-ids label{font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}.rp-ids input{width:120px}
+.rp-issues{margin:8px 0}.rp-title{font-weight:700;margin:14px 0 6px;color:#1e293b;font-size:14px}
+.rp-p1{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:4px}
+.q1{display:flex;align-items:center;gap:4px;padding:3px 4px;border-radius:8px}.q1.flagged,.q2r.flagged,.q3.flagged{background:#fff4d6;outline:1px solid #f59e0b}
+.qn{width:22px;font-size:12px;font-weight:700;text-align:right;color:#475569}
+.opt{border:1px solid #cbd5e1;background:#fff;border-radius:8px;min-width:30px;height:30px;font-weight:700;cursor:pointer;color:#334155}
+.opt.sel.good{background:#16a34a;color:#fff;border-color:#16a34a}.opt.sel.bad{background:#dc2626;color:#fff;border-color:#dc2626}.opt.keyhint{border:2px solid #16a34a}
+.rp-p2{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:8px}.q2{border:1px solid #e2e8f0;border-radius:10px;padding:6px}
+.q2h{font-size:12px;font-weight:700;margin-bottom:4px}.q2r{display:flex;align-items:center;gap:4px;margin:2px 0;padding:1px 2px;border-radius:6px}.q2r span{width:18px;font-size:12px}
+.rp-p3{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px}.q3{display:flex;flex-direction:column;font-size:12px;gap:2px;padding:4px;border-radius:8px}
+.q3.good input{border-color:#16a34a}.q3.bad input{border-color:#dc2626}
+.stat-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:8px;margin:8px 0}
+.stat-card{background:#f8fafc;border-radius:12px;padding:10px;text-align:center}.stat-card b{display:block;font-size:20px;color:#1d4ed8}.stat-card span{font-size:11px;color:#64748b}
+.class-bars{margin:10px 0}.cb-row{display:flex;align-items:center;gap:8px;margin:4px 0;font-size:13px}.cb-k{width:92px;font-weight:700}.cb-k small{display:block;font-weight:400;color:#64748b;font-size:10px}
+.cb-track{flex:1;background:#e2e8f0;border-radius:6px;height:16px;overflow:hidden}.cb-fill{height:100%}.cb-v{width:84px;text-align:right;font-size:12px}
+.hist-canvas{width:100%;height:auto;margin-top:8px}
+.tbl-wrap{overflow-x:auto}.stat-tbl{border-collapse:collapse;width:100%;font-size:12px}
+.stat-tbl th,.stat-tbl td{border:1px solid #e2e8f0;padding:4px 6px;text-align:center}.stat-tbl th{background:#f1f5f9;position:sticky;top:0}
+.stat-tbl td.keycell{outline:2px solid #16a34a;outline-offset:-2px;font-weight:700}.stat-tbl tr.voidrow{opacity:.55}
+.exp-grid{display:flex;flex-direction:column;gap:8px}.sh-qr{display:block;margin:10px auto;max-width:100%;image-rendering:pixelated}
+.kt-grid{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0}.kt-details{margin:8px 0}.kt-details textarea{width:100%;margin:6px 0}
+.kt-scale label{display:block;font-size:13px;margin:6px 0}.form-input-sm{width:62px;padding:4px 6px;border:1px solid #cbd5e1;border-radius:8px}
+.auto-status{position:absolute;left:50%;bottom:10px;transform:translateX(-50%);background:rgba(15,23,42,.82);color:#fff;font-size:13px;font-weight:600;padding:6px 14px;border-radius:999px;z-index:20;white-space:nowrap}
+#btn-auto-capture.on{background:#16a34a!important;color:#fff!important}
+#pro-toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%) translateY(20px);background:#0f172a;color:#fff;padding:10px 16px;border-radius:12px;font-size:13px;opacity:0;pointer-events:none;transition:.25s;z-index:99999;max-width:88vw;text-align:center}
+#pro-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
